@@ -46,3 +46,7 @@ Tier 1 (must): gateway, schema, policy engine, execution gateway, audit, 4-scree
 
 ### D-013 Claims discipline (2026-10-07) — ACCEPTED
 We claim only what experiments measure. DoD 3000.09 is motivation, not a compliance claim. Commercial numbers are assumptions until validated with customers.
+
+### D-014 Autonomous merges gated by CI (2026-10-07) — ACCEPTED
+No PR review requirement. Claude may push directly to `main` provided `scripts/ci.sh` passes first and the GitHub Actions run is green afterwards. CI enforces: policy package is offline/deterministic (no network, LLM, random), no eval/exec, decision-side packages never touch credentials, repo stays domain-agnostic (D-005), no committed secrets, no LICENSE while D-009 is open, schema/policy structural tests. Changes to CI, the invariant script, or the invariants require explicit human approval.
+Trade-off: Actions runs after a direct push, so this detects rather than prevents; local-first discipline plus fix-forward covers the gap. Revisit when real code lands: consider a ruleset requiring status checks.

@@ -2,7 +2,7 @@
 
 Principle: split by **trust boundary**, not by layer. One person builds the thing that *decides* (the defender), the other builds the things that *try to beat it and prove it* (the adversary and the evidence). It forces honest evaluation and gives each person a clear, defensible thesis chapter. The interface between you is the three specs. Neither of you changes a spec alone.
 
-> Proposed assignment. You two can swap names; the roles are what matter. Suggested fit: Mohamed = Defender (you already run backend/Cloud Functions/offline-first systems at Shifaa), Saif = Adversary and Evidence. Swap if Saif prefers backend.
+> Proposed assignment. You two can swap names; the roles are what matter. Suggested fit: Mohamed = Defender (strong fit for backend and offline-first systems work), Saif = Adversary and Evidence. Swap if Saif prefers backend.
 
 ---
 

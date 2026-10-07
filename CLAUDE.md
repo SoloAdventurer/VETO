@@ -25,11 +25,15 @@ VETO (Verified Execution and Trusted Oversight for Autonomous AI Agents) is a do
 - Synthetic data only. No secrets in git (`.env` is ignored).
 - Keep this repo domain-agnostic. Healthcare / Shifaa-specific packs, adapters and branding belong in a separate private repo (D-005); do not reference those products here.
 - No LICENSE file until the IP position is settled (D-009).
-- Changes touching a trust boundary (gateway, policy, execution, audit) need review by the other author.
-- Commit on a branch and open a PR; do not push to `main` once branch protection is on.
+- Workflow: no pull-request review required. Claude may commit and push directly to `main` autonomously, but ONLY after `bash scripts/ci.sh` passes locally. Never push with failing checks, never skip or weaken a check to get green, never use `--no-verify` or force-push.
+- After pushing, confirm the GitHub Actions run is green (`gh run list --limit 1`); if red, fix forward immediately or revert.
+- Exceptions that still need the human's explicit OK: editing `scripts/check_invariants.py`, `.github/workflows/`, or the invariants above (these are the guard rails); adding a LICENSE; anything in DECISIONS.md marked OPEN.
+- Spec or invariant changes: log a new entry in DECISIONS.md in the same commit.
 
 ## Commands
-Not yet defined (Phase 0: specs). Add install/test/run commands here when the first code lands.
+- Full CI locally: `bash scripts/ci.sh` (invariant checks, ruff, pytest). Same steps as `.github/workflows/ci.yml`.
+- Invariant guard only: `python3 scripts/check_invariants.py`
+- Add run/dev commands here when the first service lands.
 
 ## Roles
 Defender (gateway, policy, provenance, execution, audit) and Adversary/Evidence (simulators, agents, attacks, anomaly, dashboard, experiments). See `docs/team-split.md` for scope and reference prompts.
