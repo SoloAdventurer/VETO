@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veto.dev/schemas/action.schema.json",
+  "title": "VETO Action Proposal",
+  "description": "What an agent submits to the Agent Gateway. Unknown fields are rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "agent_id", "action", "target", "parameters", "timestamp", "context"],
+  "properties": {
+    "schema_version": { "const": "0.1" },
+    "request_id": { "type": "string", "format": "uuid", "description": "Optional client id; gateway assigns one if absent." },
+    "agent_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{1,63}$" },
+    "action": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,63}$", "description": "Verb from the action catalog, e.g. READ_PERSONNEL." },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resource", "id"],
+      "properties": {
+        "resource": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]{1,63}$" },
+        "id": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "parameters": { "type": "object", "description": "Action-specific; validated against the catalog entry for `action`." },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["on_behalf_of", "justification"],
+      "properties": {
+        "on_behalf_of": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["principal_id", "channel"],
+          "properties": {
+            "principal_id": { "type": "string" },
+            "channel": { "enum": ["operator_session", "scheduled", "autonomous"] }
+          }
+        },
+        "justification": { "type": "string", "maxLength": 2000, "description": "Free text from the agent. Informational only; never used to grant authority." },
+        "observation_ids": { "type": "array", "items": { "type": "string" }, "maxItems": 64, "description": "Observations that influenced this proposal." },
+        "inputs": {
+          "type": "array",
+          "maxItems": 64,
+          "description": "Declared data inputs that influenced the proposal, each with provenance. Gateway can add/override labels from observation records.",
+          "items": { "$ref": "#/$defs/provenance_ref" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "provenance_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "origin"],
+      "properties": {
+        "ref": { "type": "string" },
+        "origin": { "enum": ["operator_input", "trusted_store", "external_document", "email", "web", "sensor_ocr", "model_generated", "unknown"] }
+      }
+    }
+  }
+}

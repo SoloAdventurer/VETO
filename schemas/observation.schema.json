@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veto.dev/schemas/observation.schema.json",
+  "title": "VETO Observation",
+  "description": "Something an agent perceived or retrieved. Registered with the gateway so provenance labels are assigned by VETO, not by the agent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "observation_id", "source", "type", "timestamp", "data"],
+  "properties": {
+    "schema_version": { "const": "0.1" },
+    "observation_id": { "type": "string" },
+    "source": { "type": "string", "description": "Registered source id, e.g. camera.gate1, mail.inbox, db.personnel." },
+    "type": { "enum": ["detection", "ocr_text", "email", "document", "web_page", "db_record", "operator_message", "tool_output"] },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "data": { "type": "object" }
+  }
+}

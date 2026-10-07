@@ -1,0 +1,122 @@
+version: "0.1"
+policy_id: security-demo
+default_effect: deny
+
+roles:
+  analyst:
+    allow_actions: [READ_PERSONNEL, EXPORT_INCIDENT_LOG]
+  gate_operator:
+    allow_actions: [UNLOCK_DOOR, READ_PERSONNEL]
+  admin_agent:
+    allow_actions: [READ_PERSONNEL, UPDATE_CLEARANCE, EXPORT_INCIDENT_LOG, UNLOCK_DOOR, SEND_EXTERNAL_MESSAGE]
+
+agents:
+  ops-agent-1:  { role: analyst,       base_risk: 10 }
+  gate-agent-1: { role: gate_operator, base_risk: 15 }
+
+risk_bands:
+  low: [0, 30]
+  medium: [31, 60]
+  high: [61, 80]
+  critical: [81, 100]
+
+band_effects:
+  low: allow
+  medium: monitor
+  high: require_approval
+  critical: deny
+
+limits:
+  export_rows_per_hour: { window: 3600, key: agent_id }
+  reads_per_10min:      { window: 600,  key: agent_id }
+
+rules:
+  - id: deny-containment
+    priority: 1
+    effect: deny
+    when: { containment: { eq: true } }
+    reason: Emergency containment active
+
+  - id: deny-delete
+    priority: 5
+    effect: deny
+    when: { action: { eq: DELETE_RECORD } }
+    reason: Deletion is never autonomous
+
+  - id: deny-authority-from-untrusted-content
+    description: Text from OCR, email, web or documents can never grant authority.
+    priority: 10
+    effect: deny
+    when:
+      all:
+        - action: { in: [UNLOCK_DOOR, UPDATE_CLEARANCE] }
+        - provenance: { authority_source_in: [sensor_ocr, email, web, external_document, unknown, model_generated] }
+    reason: Authority claimed from untrusted content
+
+  - id: deny-bulk-export-when-tainted
+    description: Poisoned-email defence. Tainted context cannot trigger bulk exports.
+    priority: 12
+    effect: deny
+    when:
+      all:
+        - action: { eq: EXPORT_INCIDENT_LOG }
+        - provenance: { tainted: true }
+    reason: Export influenced by untrusted content
+
+  - id: deny-export-over-limit
+    priority: 15
+    effect: deny
+    when:
+      all:
+        - action: { eq: EXPORT_INCIDENT_LOG }
+        - counter: { export_rows_per_hour: { gt: 500 } }
+    reason: Export volume limit exceeded
+
+  - id: deny-external-message-unlisted-domain
+    priority: 16
+    effect: deny
+    when:
+      all:
+        - action: { eq: SEND_EXTERNAL_MESSAGE }
+        - not: { param.recipient_domain: { in: [example.mil, partner.example] } }
+    reason: Recipient domain not allowlisted
+
+  - id: allow-door-by-trusted-clearance
+    description: Door unlock only when the subject's clearance in the trusted personnel store meets the door's requirement.
+    priority: 100
+    effect: allow
+    when:
+      all:
+        - action: { eq: UNLOCK_DOOR }
+        - agent.role: { eq: gate_operator }
+        - record: { personnel.clearance: { gte_door_requirement: true } }
+        - provenance: { tainted: false }
+        - param.duration_s: { lte: 15 }
+    reason: Trusted clearance satisfies door requirement
+
+  - id: approve-clearance-update
+    priority: 110
+    effect: require_approval
+    when: { action: { eq: UPDATE_CLEARANCE } }
+    reason: Clearance changes need a human
+
+  - id: allow-read-personnel
+    priority: 120
+    effect: allow
+    when:
+      all:
+        - action: { eq: READ_PERSONNEL }
+        - agent.role: { in: [analyst, gate_operator, admin_agent] }
+        - counter: { reads_per_10min: { lte: 50 } }
+    reason: Routine read within rate limit
+
+  - id: allow-export-small
+    priority: 130
+    effect: allow
+    when:
+      all:
+        - action: { eq: EXPORT_INCIDENT_LOG }
+        - agent.role: { in: [analyst, admin_agent] }
+        - param.row_count: { lte: 100 }
+        - provenance: { tainted: false }
+    reason: Small export from clean context

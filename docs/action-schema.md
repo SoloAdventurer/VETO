@@ -1,0 +1,85 @@
+# VETO Standard Action Schema (v0.1, draft)
+
+Machine-readable: `schemas/action.schema.json`, `schemas/observation.schema.json`, `schemas/decision.schema.json`.
+
+## Design rules
+1. **One schema for every domain.** Domain meaning lives in the *action catalog* and *policy packs*, not in the core.
+2. **Agent proposes, VETO records.** Agents write `action` and `observation` payloads. Only VETO writes `decision` records.
+3. **Strict.** Unknown fields rejected. `parameters` validated against the catalog entry for the verb.
+4. **Provenance is assigned by VETO.** Agents may *declare* input origins, but the gateway labels observations from registered sources and uses the **lowest-trust** origin. A declaration can lower trust, never raise it.
+5. **Canonical + hashed.** Actions are canonicalized (sorted keys, normalized unicode, trimmed ids) and SHA-256 hashed; decision and execution are bound to that hash.
+
+## Action proposal
+```json
+{
+  "schema_version": "0.1",
+  "agent_id": "ops-agent-1",
+  "action": "UNLOCK_DOOR",
+  "target": { "resource": "door", "id": "door-3" },
+  "parameters": { "duration_s": 10 },
+  "timestamp": "2026-10-07T09:12:44Z",
+  "context": {
+    "on_behalf_of": { "principal_id": "agent-service", "channel": "autonomous" },
+    "justification": "Sign at door says level 3 may enter; person appears to be level 3.",
+    "observation_ids": ["obs-8841", "obs-8842"],
+    "inputs": [
+      { "ref": "obs-8841", "origin": "sensor_ocr" },
+      { "ref": "obs-8842", "origin": "sensor_ocr" }
+    ]
+  }
+}
+```
+Expected result: **block**. The authority claim comes from `sensor_ocr` (untrusted); policy requires a clearance from `trusted_store` or an approval.
+
+## Origins (trust order, high to low)
+| Origin | Trust | Can satisfy authority conditions? |
+|---|---|---|
+| `operator_input` | high (authenticated session) | yes |
+| `trusted_store` | high (VETO-registered DB/record) | yes |
+| `model_generated` | low | no |
+| `external_document` | untrusted | no |
+| `email` | untrusted | no |
+| `web` | untrusted | no |
+| `sensor_ocr` | untrusted | no |
+| `unknown` | untrusted | no |
+
+Effective provenance of an action = lowest-trust origin among its inputs. Any untrusted origin marks the action `tainted`.
+
+## Action catalog (v0.1 demo set)
+Verb naming: `VERB_NOUN`, upper snake case. Each entry declares: parameter schema, `sensitivity` (0-30), reversible (bool), expected-effect check for verification.
+
+| Verb | Resource | Sensitivity | Reversible | Notes |
+|---|---|---|---|---|
+| READ_PERSONNEL | personnel | 8 | yes | single record |
+| UPDATE_CLEARANCE | personnel | 25 | partly | needs approval above level 2 |
+| EXPORT_INCIDENT_LOG | incident_log | 22 | no | bulk, size-limited |
+| DELETE_RECORD | any | 30 | no | default deny |
+| UNLOCK_DOOR | door | 18 | yes | duration-limited |
+| SEND_EXTERNAL_MESSAGE | messaging | 20 | no | external domain allowlist |
+
+Domain packs add verbs (e.g. a healthcare pack in a private repo). Core never hard-codes them.
+
+## Decision / evidence record
+See `schemas/decision.schema.json`. Key fields: `action_hash`, `effective_provenance`, `policies_evaluated`, `risk`, `anomaly`, `decision`, `human_decision`, `execution`, `verification`, `prev_hash`/`record_hash` (hash chain).
+
+## Gateway API (v0.1)
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/v1/observations` | register an observation, returns provenance label |
+| POST | `/v1/actions` | submit proposal, returns decision (and execution result if allowed) |
+| GET | `/v1/actions/{id}` | status (pending approval, executed, verified) |
+| POST | `/v1/approvals/{id}` | approver resolves escalation |
+| POST | `/v1/containment` | engage/release kill switch (admin) |
+| GET | `/v1/audit` | query audit trail (read-only) |
+
+Response to `/v1/actions`:
+```json
+{ "request_id": "…", "decision": "block", "reason": "rule:deny-authority-from-untrusted-content", "action_hash": "…" }
+```
+
+## Versioning
+`schema_version` is mandatory; breaking changes bump the minor while `0.x`. Changes are recorded in DECISIONS.md.
+
+## Open questions
+- Q1: Should the agent be able to attach observations by id only (stricter) instead of declaring `inputs`? Leaning yes for v0.2.
+- Q2: Streaming/long-running actions (door held open): modelled as separate verbs for v1.
