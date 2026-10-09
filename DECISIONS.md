@@ -50,3 +50,18 @@ We claim only what experiments measure. DoD 3000.09 is motivation, not a complia
 ### D-014 Autonomous merges gated by CI (2026-10-07) — ACCEPTED
 No PR review requirement. Claude may push directly to `main` provided `scripts/ci.sh` passes first and the GitHub Actions run is green afterwards. CI enforces: policy package is offline/deterministic (no network, LLM, random), no eval/exec, decision-side packages never touch credentials, repo stays domain-agnostic (D-005), no committed secrets, no LICENSE while D-009 is open, schema/policy structural tests. Changes to CI, the invariant script, or the invariants require explicit human approval.
 Trade-off: Actions runs after a direct push, so this detects rather than prevents; local-first discipline plus fix-forward covers the gap. Revisit when real code lands: consider a ruleset requiring status checks.
+
+### D-015 Policy format v0.1 clarifications (2026-10-09) — ACCEPTED
+`limits` entries declare `action`, `metric` (count|sum) and, for sum, `param`; counters count executed actions per agent in the window plus the current request. The `record` condition has one operator, `gte_door_requirement`. Unknown records fail safe (condition not satisfied). Closed grammar is enforced at load time: unknown conditions or operators reject the policy. Extends D-003 and docs/policy-format.md.
+
+### D-016 MVP storage and anomaly model (2026-10-09) — ACCEPTED
+Audit store is SQLite with UPDATE/DELETE blocked by triggers plus a SHA-256 hash chain (PostgreSQL later). Anomaly detection is a transparent heuristic (burst rate, target breadth, never-seen transitions; model_version heuristic-0.1) behind the interface the Isolation Forest + n-gram model will replace in Tier 2. Supersedes the storage/ML parts of D-006 for the MVP only.
+
+### D-017 MVP security limits (2026-10-09) — ACCEPTED, TIME-BOXED
+No authentication yet: agent identity, operator channel and approver identity are taken at face value, and `/v1/demo/*` endpoints exist when VETO_DEMO=1. Mitigations in place: agent-submitted observations can never be trusted; operator observations are bound to one agent; an agent cannot approve its own action; the resource accepts calls only with the key held by the Execution Gateway. Must be replaced by per-agent credentials and authenticated operator/approver sessions before any real deployment (threats T6, T7).
+
+### D-018 Demo tally is not evaluation; provenance gap (2026-10-09) — ACCEPTED
+The dashboard's "unsafe attempts intercepted" counter tallies scripted scenarios and is a demonstration only (D-013 applies). Known gap T14: provenance covers only observations the agent references or declares; an agent that hides what it read is not tainted. Planned fix: session-scoped taint over everything an agent ingested, evaluated as a thesis experiment.
+
+### D-019 CI covers the real stack (2026-10-09) — ACCEPTED
+CI installs the backend runtime dependencies (fastapi, uvicorn, httpx) so the gateway tests run instead of being skipped, and gains a frontend job (npm ci, type-check, build). This only adds checks; no existing check was loosened. Flagged here because CI files are guard rails (CLAUDE.md).

@@ -1,3 +1,15 @@
-# Stub: filled in during Phase 1. Target: one-command deploy.
-# Resources live on an internal-only network; only the execution gateway can reach them.
-services: {}
+# One-command demo:  docker compose up --build   ->  http://localhost:8000
+# MVP note: the mock resource runs in-process behind an access key held only by the Execution Gateway.
+# Network-level isolation (resource on a private Docker network) arrives with the first out-of-process adapter.
+services:
+  veto:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      VETO_DEMO: "1"
+      VETO_DB: "/data/audit.db"   # audit log persists across restarts; use ":memory:" for a throwaway demo
+    volumes:
+      - veto-data:/data
+volumes:
+  veto-data:

@@ -11,8 +11,9 @@ roles:
     allow_actions: [READ_PERSONNEL, UPDATE_CLEARANCE, EXPORT_INCIDENT_LOG, UNLOCK_DOOR, SEND_EXTERNAL_MESSAGE]
 
 agents:
-  ops-agent-1:  { role: analyst,       base_risk: 10 }
-  gate-agent-1: { role: gate_operator, base_risk: 15 }
+  ops-agent-1:   { role: analyst,       base_risk: 10 }
+  gate-agent-1:  { role: gate_operator, base_risk: 15 }
+  admin-agent-1: { role: admin_agent,   base_risk: 20 }
 
 risk_bands:
   low: [0, 30]
@@ -26,9 +27,9 @@ band_effects:
   high: require_approval
   critical: deny
 
-limits:
-  export_rows_per_hour: { window: 3600, key: agent_id }
-  reads_per_10min:      { window: 600,  key: agent_id }
+limits:                       # counters usable in rules; counted per agent over executed actions in the window
+  export_rows_per_hour: { window: 3600, key: agent_id, action: EXPORT_INCIDENT_LOG, metric: sum, param: row_count }
+  reads_per_10min:      { window: 600,  key: agent_id, action: READ_PERSONNEL,      metric: count }
 
 rules:
   - id: deny-containment
