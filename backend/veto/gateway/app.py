@@ -39,7 +39,7 @@ def create_app(service: GatewayService | None = None, demo: bool | None = None) 
 
     # ---- agent-facing
     @app.post("/v1/observations")
-    def post_observation(payload: dict[str, Any], agent_id: str | None = None):
+    def post_observation(payload: dict[str, Any], agent_id: str):
         """Agent-submitted observations can never be trusted (provenance is capped at 'unknown')."""
         return guard(lambda: holder.service.register_observation(payload, agent_id=agent_id, operator_channel=False))
 
@@ -58,6 +58,11 @@ def create_app(service: GatewayService | None = None, demo: bool | None = None) 
     @app.post("/v1/operator/observations")
     def post_operator_observation(payload: dict[str, Any], agent_id: str):
         return guard(lambda: holder.service.register_observation(payload, agent_id=agent_id, operator_channel=True))
+
+    @app.post("/v1/operator/agents/{agent_id}/context-reset")
+    def post_context_reset(agent_id: str, payload: dict[str, Any] | None = None):
+        by = str((payload or {}).get("by", "operator"))[:64]
+        return guard(lambda: holder.service.reset_agent_context(agent_id, by))
 
     @app.post("/v1/approvals/{request_id}")
     def post_approval(request_id: str, payload: dict[str, Any]):

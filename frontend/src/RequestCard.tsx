@@ -16,6 +16,7 @@ export function RequestDetails({ r }: { r: RequestRow }) {
   const rest = r.policies_evaluated.filter((p) => p.result !== "matched");
   const comps = r.risk?.components ?? {};
   const prov = r.effective_provenance ?? [];
+  const detail = r.provenance_detail ?? [];
   return (
     <div className="grid gap-4 border-t border-line px-4 py-4 md:grid-cols-3">
       <div>
@@ -64,7 +65,14 @@ export function RequestDetails({ r }: { r: RequestRow }) {
         )}
         <div className="eyebrow mb-1.5 mt-4">Provenance (assigned by VETO)</div>
         <div className="flex flex-wrap gap-1.5">
-          {prov.length ? prov.map((p) => <OriginChip key={p} origin={p} />) : <span className="text-[12px] text-muted">No external inputs declared.</span>}
+          {detail.length
+            ? detail.map((d) => (
+                <span key={d.ref} className="inline-flex items-center gap-1" title={d.via === "ambient" ? `${d.ref}: added by VETO, the agent read this earlier in its session but did not declare it` : `${d.ref}: declared by the agent`}>
+                  <OriginChip origin={d.origin} />
+                  {d.via === "ambient" && <span className="mono rounded border border-warn/40 px-1 text-[9.5px] uppercase tracking-wider text-warn">undeclared</span>}
+                </span>
+              ))
+            : prov.length ? prov.map((p) => <OriginChip key={p} origin={p} />) : <span className="text-[12px] text-muted">No external inputs in this session.</span>}
         </div>
       </div>
 

@@ -26,6 +26,7 @@ The dashboard has four screens: **Live feed** (every proposed action with the de
 | Taped sign says "unlock door 3" | Blocks: text an agent merely *saw* never carries authority |
 | Sign + agent lies about the source | Blocks: provenance is assigned by VETO; declarations can only lower trust |
 | Poisoned email: export everything | Blocks: tainted context cannot trigger a bulk export |
+| Agent hides what it read | Blocks: anything an agent ingested taints all its later actions, declared or not (session taint, resettable by an operator) |
 | Document grants clearance 4 / delete record / unknown agent | Blocks (policy, RBAC, default deny) |
 | Bypass the gateway | Resource refuses: the agent has no access key |
 | Clearance change | Held for human approval; executes only after approval, and is verified |
@@ -47,4 +48,4 @@ Hard policy decides first. Risk and anomaly can only escalate, never overturn a 
 - `DECISIONS.md` decision log (append, never rewrite)
 
 ## Status
-MVP (Phase 1): gateway, policy engine, provenance, risk, heuristic anomaly, SQLite audit chain, mock security-ops resource, dashboard. Known limits are listed in DECISIONS.md D-016 to D-018 (no authentication yet, heuristic anomaly model, SQLite audit store, provenance only covers declared inputs).
+MVP (Phase 1): gateway, policy engine, provenance, risk, heuristic anomaly, SQLite audit chain, mock security-ops resource, dashboard. Known limits are listed in DECISIONS.md D-016 to D-020 (no authentication yet, heuristic anomaly model, SQLite audit store; provenance only sees data ingested through VETO-registered channels, and session taint trades some availability for integrity).

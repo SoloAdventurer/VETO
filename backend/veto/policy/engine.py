@@ -63,6 +63,9 @@ def validate_policy(policy: dict) -> list[str]:
             _validate_node(rule.get("when", {}))
         except PolicyError as exc:
             errors.append(f"{rid}: {exc}")
+    window = policy.get("provenance", {}).get("session_taint_window_s", 0)
+    if not isinstance(window, (int, float)) or isinstance(window, bool) or window < 0:
+        errors.append("provenance.session_taint_window_s must be a non-negative number")
     for name, spec in policy.get("limits", {}).items():
         for key in ("window", "action", "metric"):
             if key not in spec:

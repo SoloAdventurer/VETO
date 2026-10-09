@@ -12,6 +12,7 @@ import secrets
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,7 +27,7 @@ from veto.execution.gateway import DecisionSigner, ExecutionGateway
 from veto.paths import DEFAULT_POLICY, SCHEMAS_DIR
 from veto.policy.engine import Facts, PolicyEngine
 from veto.policy.loader import load_policy
-from veto.provenance.registry import ProvenanceRegistry
+from veto.provenance.registry import DEFAULT_TAINT_WINDOW_S, ProvenanceRegistry
 from veto.risk.scorer import score_risk
 from veto.verification.verifier import verify_effect
 
@@ -48,7 +49,9 @@ def _iso_now() -> str:
 
 
 class GatewayService:
-    def __init__(self, policy_path: Path | str | None = None, db_path: str = ":memory:") -> None:
+    def __init__(self, policy_path: Path | str | None = None, db_path: str = ":memory:",
+                 clock: Callable[[], float] = time.time) -> None:
+        self.clock = clock
         self.policy = load_policy(policy_path or DEFAULT_POLICY)
         self.engine = PolicyEngine(self.policy.raw)
         self.audit = AuditLog(db_path)
@@ -66,6 +69,10 @@ class GatewayService:
         self.execution = ExecutionGateway(self.resource, access_key, self.signer, lambda: self.containment)
         self.view = self.resource.trusted
 
+    @property
+    def taint_window_s(self) -> float:
+        return self.policy.raw.get("provenance", {}).get("session_taint_window_s", DEFAULT_TAINT_WINDOW_S)
+
     # ------------------------------------------------------------------ observations
     def next_observation_id(self) -> str:
         with self._lock:
@@ -78,7 +85,8 @@ class GatewayService:
             raise RequestError("invalid observation: " + "; ".join(errors[:3]))
         with self._lock:
             try:
-                stored = self.prov.register(obs, agent_id=agent_id, operator_channel=operator_channel)
+                stored = self.prov.register(obs, agent_id=agent_id, operator_channel=operator_channel,
+                                            now=self.clock())
             except ValueError as exc:
                 raise RequestError(str(exc), 409) from exc
         return {"observation_id": stored.observation_id, "origin": stored.origin, "capped": stored.capped,
@@ -145,7 +153,7 @@ class GatewayService:
                 return self._reject_invalid(request_id, payload, cat_errors, "builtin:catalog")
 
             now = datetime.now(timezone.utc)
-            now_ts = time.time()
+            now_ts = self.clock()
             canon = canonical_action(payload)
             ahash = action_hash(payload)
             agent_id, verb = canon["agent_id"], canon["action"]
@@ -154,7 +162,8 @@ class GatewayService:
             agent_cfg = self.policy.raw.get("agents", {}).get(agent_id)
             role = agent_cfg["role"] if agent_cfg else None
 
-            prov = self.prov.resolve(agent_id, ctx.get("observation_ids", []), ctx.get("inputs", []))
+            prov = self.prov.resolve(agent_id, ctx.get("observation_ids", []), ctx.get("inputs", []),
+                                     now=now_ts, window_s=self.taint_window_s)
             counters = self._counters(agent_id, verb, params, now_ts)
             anomaly = self.anomaly.score(agent_id, verb, target["id"], now_ts)
             door_req = self.view.door_requirement(target["id"]) if target["resource"] == "door" else None
@@ -182,6 +191,8 @@ class GatewayService:
                 "requested_action": requested, "action_hash": ahash,
                 "observation_ids": [d["ref"] for d in prov["details"]],
                 "effective_provenance": prov["authority_sources"],
+                "provenance_detail": [{"ref": d["ref"], "origin": d["origin"], "via": d["via"]}
+                                      for d in prov["details"]],
                 "policies_evaluated": pres.evaluated, "risk": risk, "anomaly": anomaly,
                 "decision": decision, "decision_reason": reason, "human_decision": None,
                 "execution": None, "verification": None,
@@ -202,7 +213,7 @@ class GatewayService:
         if res["status"] == "executed":
             verification = verify_effect(action, res["raw"], self.view)
             self._history.append({"agent_id": action["agent_id"], "action": action["action"],
-                                  "params": action["parameters"], "ts": time.time()})
+                                  "params": action["parameters"], "ts": self.clock()})
         snapshot = _strip_chain(rec)
         snapshot["execution"] = {"status": res["status"], "adapter": res["adapter"],
                                  "result_summary": res["result_summary"]}
@@ -251,6 +262,35 @@ class GatewayService:
                 "policy_version": self.policy.version, "containment_active": active,
             })
             return {"containment": self.containment, "event_id": rec["event_id"]}
+
+    # ------------------------------------------------------------------ session taint control (T14)
+    def reset_agent_context(self, agent_id: str, by: str, *, audited: bool = True) -> dict:
+        """Operator clears an agent's session taint (start of a new, clean task). Audited unless the demo harness."""
+        if agent_id not in self.policy.raw.get("agents", {}) and audited:
+            raise RequestError("unknown agent", 404)
+        with self._lock:
+            self.prov.reset_context(agent_id)
+            if audited:
+                self._append({
+                    "schema_version": "0.1", "request_id": f"sys-{uuid.uuid4().hex[:12]}", "agent_id": by[:64],
+                    "requested_action": {"action": "RESET_CONTEXT", "parameters": {"agent_id": agent_id}},
+                    "action_hash": action_hash({"agent_id": by, "action": "RESET_CONTEXT",
+                                                "target": {"resource": "agent", "id": agent_id}, "parameters": {}}),
+                    "policies_evaluated": [{"rule_id": "builtin:context-reset", "result": "matched",
+                                            "effect": "allow"}],
+                    "decision": "allow", "decision_reason": f"Session taint cleared for {agent_id} by {by}",
+                    "policy_version": self.policy.version, "containment_active": self.containment,
+                })
+            return {"agent_id": agent_id, "tainted_by": []}
+
+    def agents_view(self) -> list[dict]:
+        now = self.clock()
+        out = []
+        for aid, cfg in self.policy.raw.get("agents", {}).items():
+            amb = self.prov.ambient(aid, now, self.taint_window_s)
+            out.append({"id": aid, "role": cfg["role"], "base_risk": cfg["base_risk"],
+                        "tainted_by": [{"ref": o.observation_id, "source": o.source, "origin": o.origin} for o in amb]})
+        return out
 
     # ------------------------------------------------------------------ direct-bypass attempt (demo of invariant 5)
     def attempt_direct_access(self, agent_id: str, tags: dict | None = None) -> dict:
@@ -313,6 +353,7 @@ class GatewayService:
     def state(self) -> dict:
         return {"containment": self.containment, "doors": self.view.doors(), "personnel": self.view.personnel(),
                 "incident_total": self.view.incident_total(), "stats": self.stats(), "chain": self.audit.verify(),
+                "agents": self.agents_view(), "taint_window_s": self.taint_window_s,
                 "policy": {"id": self.policy.policy_id, "version": self.policy.version,
                            "rules": len(self.policy.raw["rules"]), "agents": self.policy.raw["agents"]}}
 

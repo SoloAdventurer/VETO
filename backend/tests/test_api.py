@@ -50,4 +50,5 @@ def test_agent_observation_endpoint_caps_trust():
            "timestamp": "2026-10-09T10:00:00Z", "data": {}}
     r = c.post("/v1/observations", json=obs, params={"agent_id": "ops-agent-1"}).json()
     assert r["trusted"] is False and r["capped"] is True
-    assert c.post("/v1/observations", json=obs).status_code == 409   # duplicate id
+    assert c.post("/v1/observations", json=obs, params={"agent_id": "ops-agent-1"}).status_code == 409  # duplicate id
+    assert c.post("/v1/observations", json={**obs, "observation_id": "o-2"}).status_code == 422  # agent_id required

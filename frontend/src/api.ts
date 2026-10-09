@@ -30,6 +30,8 @@ export const api = {
   reset: () => post<{ ok: boolean }>("/v1/demo/reset"),
   approve: (id: string, approver: string, outcome: "approved" | "rejected", note = "") =>
     post(`/v1/approvals/${id}`, { approver_id: approver, outcome, note }),
+  resetContext: (agentId: string, by: string) =>
+    post(`/v1/operator/agents/${agentId}/context-reset`, { by }),
   containment: (active: boolean, by: string, reason: string) =>
     post("/v1/containment", { active, by, reason }),
 };

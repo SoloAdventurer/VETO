@@ -1,4 +1,4 @@
-import { Activity, Bot, DoorClosed, DoorOpen, Play, RotateCcw, ShieldCheck, Skull, Swords, UserCheck } from "lucide-react";
+import { Activity, Bot, DoorClosed, DoorOpen, Eraser, Play, RotateCcw, ShieldCheck, Skull, Swords, UserCheck } from "lucide-react";
 import { useState } from "react";
 import { api } from "./api";
 import { RequestCard } from "./RequestCard";
@@ -60,6 +60,39 @@ function ScenarioPanel({ scenarios, onRan, busy, setBusy }: { scenarios: Scenari
           </div>
         ))}
       </div>
+    </Section>
+  );
+}
+
+function AgentContexts({ state, refresh }: { state: AppState; refresh: () => void }) {
+  return (
+    <Section title="Agent sessions" right={<span className="text-[11px] text-faint">taint window {Math.round(state.taint_window_s / 60)} min</span>}>
+      <div className="space-y-1.5">
+        {state.agents.map((a) => {
+          const tainted = a.tainted_by.length > 0;
+          return (
+            <div key={a.id} className={cx("rounded-lg border px-3 py-2", tainted ? "border-bad/40 bg-bad/10" : "border-line bg-bg/40")}>
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="mono truncate text-[12px] font-medium">{a.id}</div>
+                  <div className={cx("text-[11px]", tainted ? "text-bad" : "text-ok")}>
+                    {tainted ? `tainted by ${a.tainted_by.length} untrusted input${a.tainted_by.length > 1 ? "s" : ""}` : "clean session"}
+                  </div>
+                </div>
+                {tainted && (
+                  <button className="btn" title="Operator clears the session taint (audited)" onClick={async () => { await api.resetContext(a.id, "operator-1"); refresh(); }}>
+                    <Eraser size={12} />Reset
+                  </button>
+                )}
+              </div>
+              {tainted && (
+                <div className="mono mt-1 truncate text-[10.5px] text-faint">{a.tainted_by.map((t) => `${t.source}`).join(" · ")}</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-2.5 text-[11px] leading-snug text-faint">Anything an agent reads from an untrusted source taints everything it does next, even if it never mentions it.</p>
     </Section>
   );
 }
@@ -131,7 +164,7 @@ export function Live({ state, rows, scenarios, refresh }: { state: AppState; row
           )}
         </div>
 
-        <div className="xl:sticky xl:top-[84px] xl:order-3 xl:self-start"><Resources state={state} /></div>
+        <div className="space-y-4 xl:sticky xl:top-[84px] xl:order-3 xl:max-h-[calc(100vh-100px)] xl:self-start xl:overflow-y-auto xl:pr-1"><AgentContexts state={state} refresh={refresh} /><Resources state={state} /></div>
       </div>
     </div>
   );

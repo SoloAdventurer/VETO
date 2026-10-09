@@ -31,6 +31,9 @@ limits:                       # counters usable in rules; counted per agent over
   export_rows_per_hour: { window: 3600, key: agent_id, action: EXPORT_INCIDENT_LOG, metric: sum, param: row_count }
   reads_per_10min:      { window: 600,  key: agent_id, action: READ_PERSONNEL,      metric: count }
 
+provenance:
+  session_taint_window_s: 900   # untrusted data an agent ingested taints everything it does for 15 min (0 = off)
+
 rules:
   - id: deny-containment
     priority: 1

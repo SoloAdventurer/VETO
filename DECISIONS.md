@@ -65,3 +65,8 @@ The dashboard's "unsafe attempts intercepted" counter tallies scripted scenarios
 
 ### D-019 CI covers the real stack (2026-10-09) — ACCEPTED
 CI installs the backend runtime dependencies (fastapi, uvicorn, httpx) so the gateway tests run instead of being skipped, and gains a frontend job (npm ci, type-check, build). This only adds checks; no existing check was loosened. Flagged here because CI files are guard rails (CLAUDE.md).
+
+### D-020 Session-scoped taint closes T14 (2026-10-09) — ACCEPTED
+Supersedes the "planned fix" in D-018. Every untrusted observation an agent ingests through VETO taints all of that agent's later actions (`provenance_detail[].via = "ambient"`) for `provenance.session_taint_window_s` (default 900 s, 0 = off) or until an operator resets the agent's context (authenticated and audited in production; the demo harness resets silently at the start of each scripted scenario). Evidence: tests/test_provenance_session.py includes a control run with the feature off, where the hidden-injection export executes, and the same run with it on, where it is blocked.
+Cost: over-tainting. A clean-looking action is blocked after the agent has read anything untrusted, until reset or expiry; this is a deliberate availability-for-integrity trade and a thesis measurement (false-block rate vs interception rate, by window size).
+Boundary (state it in the thesis): VETO only sees data that enters through registered channels. Data an agent obtains by other routes is invisible; the MCP proxy (D-008) is the planned way to put those routes behind VETO. Decision record schema gains optional `provenance_detail` (schemas/decision.schema.json).

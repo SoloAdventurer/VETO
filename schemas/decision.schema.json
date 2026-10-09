@@ -5,27 +5,85 @@
   "description": "Written by VETO (never by the agent). One record per request; append-only; hash-chained.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "event_id", "request_id", "timestamp", "agent_id", "action_hash", "decision", "policies_evaluated", "prev_hash", "record_hash"],
+  "required": [
+    "schema_version",
+    "event_id",
+    "request_id",
+    "timestamp",
+    "agent_id",
+    "action_hash",
+    "decision",
+    "policies_evaluated",
+    "prev_hash",
+    "record_hash"
+  ],
   "properties": {
-    "schema_version": { "const": "0.1" },
-    "event_id": { "type": "string" },
-    "request_id": { "type": "string" },
-    "timestamp": { "type": "string", "format": "date-time" },
-    "agent_id": { "type": "string" },
-    "requested_action": { "type": "object", "description": "Canonicalized copy of the action proposal." },
-    "action_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$", "description": "SHA-256 of canonical action JSON. Execution Gateway re-checks it." },
-    "observation_ids": { "type": "array", "items": { "type": "string" } },
-    "effective_provenance": { "type": "array", "items": { "type": "string" }, "description": "Lowest-trust origins that influenced the action." },
+    "schema_version": {
+      "const": "0.1"
+    },
+    "event_id": {
+      "type": "string"
+    },
+    "request_id": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "agent_id": {
+      "type": "string"
+    },
+    "requested_action": {
+      "type": "object",
+      "description": "Canonicalized copy of the action proposal."
+    },
+    "action_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 of canonical action JSON. Execution Gateway re-checks it."
+    },
+    "observation_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "effective_provenance": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Lowest-trust origins that influenced the action."
+    },
     "policies_evaluated": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["rule_id", "result"],
+        "required": [
+          "rule_id",
+          "result"
+        ],
         "properties": {
-          "rule_id": { "type": "string" },
-          "result": { "enum": ["matched", "not_matched", "error"] },
-          "effect": { "enum": ["allow", "deny", "require_approval", "monitor"] }
+          "rule_id": {
+            "type": "string"
+          },
+          "result": {
+            "enum": [
+              "matched",
+              "not_matched",
+              "error"
+            ]
+          },
+          "effect": {
+            "enum": [
+              "allow",
+              "deny",
+              "require_approval",
+              "monitor"
+            ]
+          }
         }
       }
     },
@@ -33,52 +91,155 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "score": { "type": "integer", "minimum": 0, "maximum": 100 },
-        "band": { "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"] },
-        "components": { "type": "object" }
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "band": {
+          "enum": [
+            "LOW",
+            "MEDIUM",
+            "HIGH",
+            "CRITICAL"
+          ]
+        },
+        "components": {
+          "type": "object"
+        }
       }
     },
     "anomaly": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "score": { "type": "number" },
-        "flagged": { "type": "boolean" },
-        "model_version": { "type": "string" }
+        "score": {
+          "type": "number"
+        },
+        "flagged": {
+          "type": "boolean"
+        },
+        "model_version": {
+          "type": "string"
+        }
       }
     },
-    "decision": { "enum": ["allow", "allow_monitor", "require_approval", "block"] },
-    "decision_reason": { "type": "string" },
+    "decision": {
+      "enum": [
+        "allow",
+        "allow_monitor",
+        "require_approval",
+        "block"
+      ]
+    },
+    "decision_reason": {
+      "type": "string"
+    },
     "human_decision": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "additionalProperties": false,
       "properties": {
-        "approver_id": { "type": "string" },
-        "outcome": { "enum": ["approved", "rejected", "expired"] },
-        "timestamp": { "type": "string", "format": "date-time" },
-        "note": { "type": "string" }
+        "approver_id": {
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "approved",
+            "rejected",
+            "expired"
+          ]
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "note": {
+          "type": "string"
+        }
       }
     },
     "execution": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "additionalProperties": false,
       "properties": {
-        "status": { "enum": ["executed", "failed", "not_executed"] },
-        "adapter": { "type": "string" },
-        "result_summary": { "type": "string" }
+        "status": {
+          "enum": [
+            "executed",
+            "failed",
+            "not_executed"
+          ]
+        },
+        "adapter": {
+          "type": "string"
+        },
+        "result_summary": {
+          "type": "string"
+        }
       }
     },
     "verification": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "additionalProperties": false,
       "properties": {
-        "status": { "enum": ["verified", "mismatch", "skipped"] },
-        "detail": { "type": "string" }
+        "status": {
+          "enum": [
+            "verified",
+            "mismatch",
+            "skipped"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        }
       }
     },
-    "policy_version": { "type": "string" },
-    "containment_active": { "type": "boolean" },
-    "prev_hash": { "type": "string" },
-    "record_hash": { "type": "string" }
+    "policy_version": {
+      "type": "string"
+    },
+    "containment_active": {
+      "type": "boolean"
+    },
+    "prev_hash": {
+      "type": "string"
+    },
+    "record_hash": {
+      "type": "string"
+    },
+    "provenance_detail": {
+      "type": "array",
+      "description": "Every input that influenced the action. via=declared: the agent named it; via=ambient: VETO added it because the agent ingested it earlier in its session (session taint).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref",
+          "origin",
+          "via"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "via": {
+            "enum": [
+              "declared",
+              "ambient"
+            ]
+          }
+        }
+      }
+    }
   }
 }

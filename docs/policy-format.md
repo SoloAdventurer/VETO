@@ -23,6 +23,7 @@ roles:            # RBAC: which verbs/resources a role may even request
   analyst:  { allow_actions: [READ_PERSONNEL, EXPORT_INCIDENT_LOG] }
 agents:           # agent identity -> role, base risk
   ops-agent-1: { role: analyst, base_risk: 10 }
+provenance: { session_taint_window_s: 900 }   # untrusted data an agent ingested taints all its actions for this long (0 = off)
 risk_bands: { low: [0,30], medium: [31,60], high: [61,80], critical: [81,100] }
 band_effects: { low: allow, medium: allow_monitor, high: require_approval, critical: block }
 limits:           # named counters usable in rules; counted per agent over EXECUTED actions in the window

@@ -46,6 +46,7 @@ export interface AuditRecord {
   action_hash: string;
   observation_ids?: string[];
   effective_provenance?: string[];
+  provenance_detail?: { ref: string; origin: string; via: "declared" | "ambient" }[];
   policies_evaluated: RuleEval[];
   risk?: Risk;
   anomaly?: Anomaly;
@@ -101,7 +102,16 @@ export interface ChainStatus {
   detail: string;
 }
 
+export interface AgentView {
+  id: string;
+  role: string;
+  base_risk: number;
+  tainted_by: { ref: string; source: string; origin: string }[];
+}
+
 export interface AppState {
+  agents: AgentView[];
+  taint_window_s: number;
   containment: boolean;
   doors: Door[];
   personnel: Person[];
