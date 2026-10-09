@@ -1,5 +1,10 @@
 [project]
 name = "veto"
-version = "0.0.1"
+version = "0.1.0"
+description = "Verified Execution and Trusted Oversight for Autonomous AI Agents"
 requires-python = ">=3.11"
-dependencies = ["fastapi", "pydantic>=2", "pyyaml", "jsonschema", "sqlalchemy", "psycopg[binary]", "scikit-learn"]
+dependencies = ["fastapi", "uvicorn", "jsonschema", "pyyaml"]
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx", "ruff"]
+# Tier 2 (not used yet): scikit-learn for the Isolation Forest / n-gram anomaly models; PostgreSQL driver for the audit store.

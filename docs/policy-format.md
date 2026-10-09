@@ -25,8 +25,9 @@ agents:           # agent identity -> role, base risk
   ops-agent-1: { role: analyst, base_risk: 10 }
 risk_bands: { low: [0,30], medium: [31,60], high: [61,80], critical: [81,100] }
 band_effects: { low: allow, medium: allow_monitor, high: require_approval, critical: block }
-limits:           # named counters usable in rules
-  export_rows_per_hour: { window: 3600, key: agent_id }
+limits:           # named counters usable in rules; counted per agent over EXECUTED actions in the window
+  export_rows_per_hour: { window: 3600, key: agent_id, action: EXPORT_INCIDENT_LOG, metric: sum, param: row_count }
+  reads_per_10min:      { window: 600,  key: agent_id, action: READ_PERSONNEL,      metric: count }
 rules: [ ... ]
 ```
 
@@ -54,7 +55,7 @@ rules: [ ... ]
 | `channel` | `eq`, `in` | operator_session / scheduled / autonomous |
 | `time` | `between: [HH:MM, HH:MM]`, `weekday_in` | evaluation time (UTC) |
 | `counter` | `<name>: { gt: N }` | windowed counters from `limits` |
-| `record` | `<store>.<field>: { eq/gte… }` | lookup in a *trusted store* (e.g. clearance of the subject) |
+| `record` | `<store>.<field>: { gte_door_requirement: bool }` | lookup in a *trusted store*. v0.1 defines one operator: the subject's clearance (param `subject_id`) is >= the target door's requirement. Unknown record -> condition not satisfied (fail safe). |
 | `containment` | `eq: true` | kill switch state |
 
 `all`, `any`, `not` compose conditions. No arbitrary expressions or code execution: the grammar is closed so rules are analyzable and testable.

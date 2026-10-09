@@ -57,6 +57,7 @@ If S1 fails, VETO provides no guarantee. This is stated explicitly in the thesis
 | T11 | Verification evasion | Action "succeeds" but with different effect | post-execution verification vs expected effect | EXP-VER-01 |
 | T12 | Denial of service / fail-open | Gateway down -> agents act freely | fail closed; no direct path exists (S1) | EXP-LAT-01 |
 | T13 | Containment failure | Kill switch ignored | containment flag checked first, every request | EXP-CON-01 |
+| T14 | Provenance omission | Agent uses an untrusted observation but does not reference it | MVP: only referenced/declared observations taint (OPEN GAP). v0.2: session-scoped taint over everything the agent ingested | EXP-ATK-04 |
 
 ## 8. Out of scope (v1)
 - Compromise of host/OS/Docker/DB (S2).
