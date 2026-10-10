@@ -49,8 +49,8 @@ If S1 fails, VETO provides no guarantee. This is stated explicitly in the thesis
 | T3 | Gateway bypass | Agent calls resource API directly | network isolation, credentials only in Execution Gateway | EXP-BYP-01 |
 | T4 | Parameter smuggling / schema abuse | Extra fields, type confusion, encoded targets | strict schema validation, reject unknown fields, canonicalization | EXP-BYP-02 |
 | T5 | Action splitting (salami) | 500 small READs instead of one bulk export | per-window rate/volume limits, sequence anomaly | EXP-ATK-03 |
-| T6 | Identity spoofing | Agent claims another `agent_id` | authenticated agent credentials, id bound to token | EXP-BYP-03 |
-| T7 | Approval fatigue / spoofed approval | Flood approvals, forged approver | rate-limit escalations, signed approver sessions, show provenance in UI | EXP-HIL-01 |
+| T6 | Identity spoofing | Agent claims another `agent_id` | API key per agent; the id in the body must equal the key's principal, otherwise 403 and an audited `builtin:identity-mismatch` block (D-021) | EXP-BYP-03 |
+| T7 | Approval fatigue / spoofed approval | Flood approvals, forged approver | approver identity taken from an authenticated `approver` key (body value ignored); agent keys cannot approve; per-agent cap on open approvals (`approvals.max_pending_per_agent`); provenance shown in the UI. Not yet: rate-limiting failed sign-ins, key expiry | EXP-HIL-01 |
 | T8 | Policy tampering | Edit policy to allow action | policy files signed/versioned, admin-only, change audited | review |
 | T9 | Audit tampering | Delete/alter log rows | append-only table, hash chain | EXP-AUD-01 |
 | T10 | TOCTOU | Action approved, then parameters changed before execution | decision bound to canonical action hash; Execution Gateway re-checks hash | EXP-BYP-04 |

@@ -4,14 +4,14 @@ import { api } from "./api";
 import type { AppState, RequestRow } from "./types";
 import { cx, timeOf } from "./ui";
 
-export function Containment({ state, rows, refresh }: { state: AppState; rows: RequestRow[]; refresh: () => void }) {
+export function Containment({ state, rows, refresh, canOperate }: { state: AppState; rows: RequestRow[]; refresh: () => void; canOperate: boolean }) {
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const on = state.containment;
   const toggle = async () => {
     setBusy(true);
     try {
-      await api.containment(!on, "operator-1", reason || (on ? "all clear" : "operator initiated"));
+      await api.containment(!on, reason || (on ? "all clear" : "operator initiated"));
       setReason("");
       refresh();
     } finally {
@@ -45,7 +45,7 @@ export function Containment({ state, rows, refresh }: { state: AppState; rows: R
         </div>
         <div className="flex items-center gap-2">
           <input className="w-72" placeholder={on ? "Reason for release (optional)" : "Reason (optional)"} value={reason} onChange={(e) => setReason(e.target.value)} />
-          <button className={cx("btn", on ? "btn-ok" : "btn-bad")} onClick={toggle} disabled={busy}>{on ? "Release" : "Engage"}</button>
+          <button className={cx("btn", on ? "btn-ok" : "btn-bad")} onClick={toggle} disabled={busy || !canOperate} title={canOperate ? undefined : "Requires the operator role"}>{on ? "Release" : "Engage"}</button>
         </div>
       </div>
 

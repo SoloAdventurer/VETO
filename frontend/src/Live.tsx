@@ -64,7 +64,7 @@ function ScenarioPanel({ scenarios, onRan, busy, setBusy }: { scenarios: Scenari
   );
 }
 
-function AgentContexts({ state, refresh }: { state: AppState; refresh: () => void }) {
+function AgentContexts({ state, refresh, canOperate }: { state: AppState; refresh: () => void; canOperate: boolean }) {
   return (
     <Section title="Agent sessions" right={<span className="text-[11px] text-faint">taint window {Math.round(state.taint_window_s / 60)} min</span>}>
       <div className="space-y-1.5">
@@ -79,8 +79,8 @@ function AgentContexts({ state, refresh }: { state: AppState; refresh: () => voi
                     {tainted ? `tainted by ${a.tainted_by.length} untrusted input${a.tainted_by.length > 1 ? "s" : ""}` : "clean session"}
                   </div>
                 </div>
-                {tainted && (
-                  <button className="btn" title="Operator clears the session taint (audited)" onClick={async () => { await api.resetContext(a.id, "operator-1"); refresh(); }}>
+                {tainted && canOperate && (
+                  <button className="btn" title="Operator clears the session taint (audited)" onClick={async () => { await api.resetContext(a.id); refresh(); }}>
                     <Eraser size={12} />Reset
                   </button>
                 )}
@@ -132,7 +132,7 @@ function Resources({ state }: { state: AppState }) {
   );
 }
 
-export function Live({ state, rows, scenarios, refresh }: { state: AppState; rows: RequestRow[]; scenarios: Scenario[]; refresh: () => void }) {
+export function Live({ state, rows, scenarios, refresh, canOperate }: { state: AppState; rows: RequestRow[]; scenarios: Scenario[]; refresh: () => void; canOperate: boolean }) {
   const [busy, setBusy] = useState<string | null>(null);
   const s = state.stats;
   const uir = s.uir === null ? "—" : `${Math.round(s.uir * 100)}%`;
@@ -148,8 +148,8 @@ export function Live({ state, rows, scenarios, refresh }: { state: AppState; row
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)_320px]">
-        <div className="space-y-4 xl:sticky xl:top-[84px] xl:order-1 xl:max-h-[calc(100vh-100px)] xl:self-start xl:overflow-y-auto xl:pr-1"><ScenarioPanel scenarios={scenarios} onRan={refresh} busy={busy} setBusy={setBusy} />
-          <button className="btn w-full justify-center text-muted" onClick={async () => { await api.reset(); refresh(); }}><RotateCcw size={13} />Reset demo state</button>
+        <div className="space-y-4 xl:sticky xl:top-[84px] xl:order-1 xl:max-h-[calc(100vh-100px)] xl:self-start xl:overflow-y-auto xl:pr-1">{canOperate && <ScenarioPanel scenarios={scenarios} onRan={refresh} busy={busy} setBusy={setBusy} />}
+          {canOperate && <button className="btn w-full justify-center text-muted" onClick={async () => { await api.reset(); refresh(); }}><RotateCcw size={13} />Reset demo state</button>}
         </div>
 
         <div className="space-y-3 xl:order-2">
@@ -164,7 +164,7 @@ export function Live({ state, rows, scenarios, refresh }: { state: AppState; row
           )}
         </div>
 
-        <div className="space-y-4 xl:sticky xl:top-[84px] xl:order-3 xl:max-h-[calc(100vh-100px)] xl:self-start xl:overflow-y-auto xl:pr-1"><AgentContexts state={state} refresh={refresh} /><Resources state={state} /></div>
+        <div className="space-y-4 xl:sticky xl:top-[84px] xl:order-3 xl:max-h-[calc(100vh-100px)] xl:self-start xl:overflow-y-auto xl:pr-1"><AgentContexts state={state} refresh={refresh} canOperate={canOperate} /><Resources state={state} /></div>
       </div>
     </div>
   );

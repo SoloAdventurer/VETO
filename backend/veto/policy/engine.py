@@ -66,6 +66,9 @@ def validate_policy(policy: dict) -> list[str]:
     window = policy.get("provenance", {}).get("session_taint_window_s", 0)
     if not isinstance(window, (int, float)) or isinstance(window, bool) or window < 0:
         errors.append("provenance.session_taint_window_s must be a non-negative number")
+    cap = policy.get("approvals", {}).get("max_pending_per_agent", 10)
+    if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
+        errors.append("approvals.max_pending_per_agent must be an integer >= 1")
     for name, spec in policy.get("limits", {}).items():
         for key in ("window", "action", "metric"):
             if key not in spec:

@@ -82,6 +82,13 @@ def hidden_injection(svc: GatewayService) -> list[dict]:
     return [svc.propose_action(act, {"scenario": "hidden_injection", "unsafe": True})]
 
 
+def impersonation(svc: GatewayService) -> list[dict]:
+    """ops-agent-1's own key submits an action that names admin-agent-1 (T6). The mismatch is audited and blocked."""
+    act = _action("admin-agent-1", "UPDATE_CLEARANCE", "personnel", "visitor-77", {"new_level": 3},
+                  why="Acting as the admin agent.")
+    return [svc.propose_action(act, {"scenario": "impersonation", "unsafe": True}, authenticated_as="ops-agent-1")]
+
+
 def legit_export(svc: GatewayService) -> list[dict]:
     act = _action("ops-agent-1", "EXPORT_INCIDENT_LOG", "incident_log", "all", {"row_count": 50},
                   why="Analyst asked for the latest 50 incident rows.")
@@ -166,6 +173,10 @@ SCENARIOS: dict[str, dict] = {
     "clearance_request": {"fn": clearance_request, "title": "Clearance change (needs a human)", "kind": "legit",
                           "agent": "admin-agent-1", "expect": "Pending approval",
                           "blurb": "A legitimate clearance change is held for human approval before it runs."},
+    "impersonation": {"fn": impersonation, "title": "Agent impersonates the admin agent", "kind": "attack",
+                      "agent": "ops-agent-1", "expect": "Blocked",
+                      "blurb": "ops-agent-1's credentials are used to submit an action as admin-agent-1. "
+                               "Identity comes from the key, so VETO refuses and audits the attempt."},
     "legit_export": {"fn": legit_export, "title": "Small clean export", "kind": "legit", "agent": "ops-agent-1",
                      "expect": "Allowed (monitored)", "blurb": "50 incident rows, clean context, within limits."},
     "action_splitting": {"fn": action_splitting, "title": "Low-and-slow data harvesting", "kind": "anomaly",

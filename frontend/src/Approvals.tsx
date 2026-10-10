@@ -1,17 +1,17 @@
 import { Check, Inbox, UserRound, X } from "lucide-react";
 import { useState } from "react";
-import { api } from "./api";
+import { api, type Me } from "./api";
 import type { RequestRow } from "./types";
 import { actionTitle, Empty, OriginChip, RiskPill, timeOf } from "./ui";
 
-function Card({ r, approver, onDone }: { r: RequestRow; approver: string; onDone: () => void }) {
+function Card({ r, canApprove, onDone }: { r: RequestRow; canApprove: boolean; onDone: () => void }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const act = async (outcome: "approved" | "rejected") => {
     setBusy(true);
     setErr(null);
     try {
-      await api.approve(r.request_id, approver, outcome);
+      await api.approve(r.request_id, outcome);
       onDone();
     } catch (e) {
       setErr((e as Error).message);
@@ -53,8 +53,8 @@ function Card({ r, approver, onDone }: { r: RequestRow; approver: string; onDone
             <div className="mt-3 text-[12.5px] text-muted">Agent says: “{r.requested_action.justification}” <span className="text-faint">(informational only)</span></div>
           )}
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <button className="btn btn-ok" disabled={busy} onClick={() => act("approved")}><Check size={14} />Approve &amp; execute</button>
-            <button className="btn btn-bad" disabled={busy} onClick={() => act("rejected")}><X size={14} />Reject</button>
+            <button className="btn btn-ok" disabled={busy || !canApprove} title={canApprove ? undefined : "Requires the approver role"} onClick={() => act("approved")}><Check size={14} />Approve &amp; execute</button>
+            <button className="btn btn-bad" disabled={busy || !canApprove} title={canApprove ? undefined : "Requires the approver role"} onClick={() => act("rejected")}><X size={14} />Reject</button>
             {err && <span className="text-[12px] text-bad">{err}</span>}
           </div>
         </div>
@@ -63,8 +63,8 @@ function Card({ r, approver, onDone }: { r: RequestRow; approver: string; onDone
   );
 }
 
-export function Approvals({ rows, refresh }: { rows: RequestRow[]; refresh: () => void }) {
-  const [approver, setApprover] = useState("supervisor-1");
+export function Approvals({ rows, refresh, me }: { rows: RequestRow[]; refresh: () => void; me: Me }) {
+  const canApprove = me.roles.includes("approver");
   const pending = rows.filter((r) => r.status === "pending_approval");
   const recent = rows.filter((r) => r.human_decision).slice(0, 6);
   return (
@@ -74,14 +74,12 @@ export function Approvals({ rows, refresh }: { rows: RequestRow[]; refresh: () =
           <h2 className="text-[18px] font-semibold">Approval queue</h2>
           <p className="mt-1 max-w-xl text-[13px] text-muted">Anything VETO is not certain about waits here. Nothing runs until a person decides, the decision is written to the audit log first, and an agent can never approve itself.</p>
         </div>
-        <label className="flex items-center gap-2 text-[12px] text-muted"><UserRound size={14} />Acting as
-          <input className="mono w-36" value={approver} onChange={(e) => setApprover(e.target.value)} />
-        </label>
+        <div className="flex items-center gap-2 text-[12px] text-muted"><UserRound size={14} />{canApprove ? "Approving as" : "Read-only:"} <span className="mono text-ink">{me.id}</span></div>
       </div>
       {pending.length === 0 ? (
         <div className="card"><Empty icon={<Inbox size={34} />} title="Queue is clear" hint="Run “Clearance change” or “Low-and-slow data harvesting” from the Live view to see requests held for review." /></div>
       ) : (
-        pending.map((r) => <Card key={r.request_id} r={r} approver={approver} onDone={refresh} />)
+        pending.map((r) => <Card key={r.request_id} r={r} canApprove={canApprove} onDone={refresh} />)
       )}
       {recent.length > 0 && (
         <div className="card p-4">

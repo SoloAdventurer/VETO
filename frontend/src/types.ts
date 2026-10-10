@@ -112,6 +112,7 @@ export interface AgentView {
 export interface AppState {
   agents: AgentView[];
   taint_window_s: number;
+  auth?: { failures: number };
   containment: boolean;
   doors: Door[];
   personnel: Person[];

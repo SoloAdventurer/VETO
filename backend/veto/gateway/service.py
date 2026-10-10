@@ -68,6 +68,13 @@ class GatewayService:
         self.signer = DecisionSigner(secrets.token_bytes(32))
         self.execution = ExecutionGateway(self.resource, access_key, self.signer, lambda: self.containment)
         self.view = self.resource.trusted
+        self._pending: dict[str, str] = {}    # request_id -> agent_id, awaiting human approval (T7 cap)
+        latest = {rec["request_id"]: rec for rec in self.audit.all()}
+        self._pending = {rid: rec["agent_id"] for rid, rec in latest.items() if status_of(rec) == "pending_approval"}
+
+    @property
+    def max_pending_per_agent(self) -> int:
+        return self.policy.raw.get("approvals", {}).get("max_pending_per_agent", 10)
 
     @property
     def taint_window_s(self) -> float:
@@ -137,13 +144,30 @@ class GatewayService:
                 "verification": rec.get("verification"), "status": status_of(rec)}
 
     # ------------------------------------------------------------------ the pipeline
-    def propose_action(self, payload: dict, tags: dict | None = None) -> dict:
+    def _reject_identity(self, request_id: str, payload: dict, actor: str) -> dict:
+        """The key that signed this request belongs to `actor`, but the body claims another agent (T6)."""
+        claimed = str(payload.get("agent_id"))[:64]
+        rec = self._append({
+            "schema_version": "0.1", "request_id": request_id, "agent_id": actor[:64],
+            "requested_action": {k: payload.get(k) for k in ("action", "target", "parameters")},
+            "action_hash": action_hash({k: v for k, v in payload.items() if isinstance(k, str)}),
+            "decision": "block",
+            "decision_reason": f"Identity mismatch: credentials of '{actor}' used to act as '{claimed}'",
+            "policies_evaluated": [{"rule_id": "builtin:identity-mismatch", "result": "matched", "effect": "deny"}],
+            "policy_version": self.policy.version, "containment_active": self.containment,
+        })
+        return {**self._response(rec), "identity_mismatch": True}
+
+    def propose_action(self, payload: dict, tags: dict | None = None, authenticated_as: str | None = None) -> dict:
+        """`authenticated_as` is the agent id bound to the caller's API key; None only for in-process harness use."""
         with self._lock:
             request_id = f"req-{uuid.uuid4().hex[:12]}"
             if tags:
                 self.tags[request_id] = tags
             if not isinstance(payload, dict):
                 raise RequestError("body must be a JSON object")
+            if authenticated_as is not None and payload.get("agent_id") != authenticated_as:
+                return self._reject_identity(request_id, payload, authenticated_as)
             schema_errors = [e.message for e in ACTION_VALIDATOR.iter_errors(payload)]
             if schema_errors:
                 return self._reject_invalid(request_id, payload, ["schema: " + e for e in schema_errors],
@@ -184,6 +208,15 @@ class GatewayService:
             if decision != policy_decision:
                 reason = f"Escalated by risk band {risk['band']} ({risk['score']}): {pres.reason}"
 
+            policies = list(pres.evaluated)
+            if decision == "require_approval":
+                pending = sum(1 for a in self._pending.values() if a == agent_id)
+                if pending >= self.max_pending_per_agent:
+                    decision = "block"
+                    reason = (f"Approval queue cap reached ({pending} pending for {agent_id}); "
+                              "resolve existing requests first")
+                    policies.append({"rule_id": "builtin:approval-cap", "result": "matched", "effect": "deny"})
+
             requested = {**canon, "justification": ctx["justification"][:500],
                          "channel": ctx["on_behalf_of"]["channel"], "principal_id": ctx["on_behalf_of"]["principal_id"]}
             rec = self._append({
@@ -193,12 +226,14 @@ class GatewayService:
                 "effective_provenance": prov["authority_sources"],
                 "provenance_detail": [{"ref": d["ref"], "origin": d["origin"], "via": d["via"]}
                                       for d in prov["details"]],
-                "policies_evaluated": pres.evaluated, "risk": risk, "anomaly": anomaly,
+                "policies_evaluated": policies, "risk": risk, "anomaly": anomaly,
                 "decision": decision, "decision_reason": reason, "human_decision": None,
                 "execution": None, "verification": None,
                 "policy_version": self.policy.version, "containment_active": self.containment,
             })
             self.anomaly.observe(agent_id, verb, target["id"], now_ts)
+            if decision == "require_approval":
+                self._pending[request_id] = agent_id
             if decision in ("allow", "allow_monitor"):
                 rec = self._execute(rec, "allow")
             return self._response(rec)
@@ -233,6 +268,7 @@ class GatewayService:
                 raise RequestError("request is not awaiting approval", 409)
             if approver_id == rec["agent_id"]:
                 raise RequestError("an agent cannot approve its own action", 403)
+            self._pending.pop(request_id, None)
             base = _strip_chain(rec)
             base["human_decision"] = {"approver_id": approver_id[:64], "outcome": outcome, "timestamp": _iso_now(),
                                       "note": note[:500]}
@@ -262,6 +298,20 @@ class GatewayService:
                 "policy_version": self.policy.version, "containment_active": active,
             })
             return {"containment": self.containment, "event_id": rec["event_id"]}
+
+    def record_system_event(self, by: str, action: str, params: dict, reason: str) -> dict:
+        """Audit an administrative action (principal/key management) so privileged changes leave evidence."""
+        with self._lock:
+            rec = self._append({
+                "schema_version": "0.1", "request_id": f"sys-{uuid.uuid4().hex[:12]}", "agent_id": by[:64],
+                "requested_action": {"action": action, "parameters": params},
+                "action_hash": action_hash({"agent_id": by, "action": action,
+                                            "target": {"resource": "system", "id": "auth"}, "parameters": params}),
+                "policies_evaluated": [{"rule_id": "builtin:admin-action", "result": "matched", "effect": "allow"}],
+                "decision": "allow", "decision_reason": reason[:300],
+                "policy_version": self.policy.version, "containment_active": self.containment,
+            })
+            return {"event_id": rec["event_id"]}
 
     # ------------------------------------------------------------------ session taint control (T14)
     def reset_agent_context(self, agent_id: str, by: str, *, audited: bool = True) -> dict:

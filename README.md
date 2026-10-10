@@ -16,6 +16,8 @@ pip install fastapi uvicorn jsonschema pyyaml
 cd frontend && npm ci && npm run build && cd ..
 PYTHONPATH=backend uvicorn veto.gateway.app:app --port 8000   # -> http://localhost:8000
 ```
+Sign in with an API key. The compose file installs a **demo-only** admin key, `veto_demo-only-key-change-me-0000`; without Docker set your own with `VETO_BOOTSTRAP_KEY=veto_<24+ chars>` (if you set none, one is generated and printed once on startup). Never use the demo key outside a local demo.
+
 Frontend dev with hot reload: `cd frontend && npm run dev` (proxies the API on :8000).
 
 The dashboard has four screens: **Live feed** (every proposed action with the decision and the evidence), **Approvals** (human-in-the-loop queue), **Containment** (kill switch), **Audit trail** (hash-chained log with integrity check). The Live feed has scripted agent scenarios:
@@ -34,6 +36,9 @@ The dashboard has four screens: **Live feed** (every proposed action with the de
 
 The "unsafe attempts intercepted" counter is a demo tally of scripted scenarios, not the thesis evaluation.
 
+## Identity and keys
+Every endpoint except `/healthz` needs `Authorization: Bearer veto_...`. Identity comes from the key, never from the request body: an agent key can only submit actions as that agent (a mismatch is blocked with 403 and audited), and approvals are recorded under the approver's own principal. Roles: `agent` (exclusive), `operator`, `approver`, `viewer`, `admin`. Keys are random, stored only as SHA-256 hashes, shown once, revocable at once. Manage them with `scripts/veto_admin.py`; each admin change is written to the audit chain. An agent is limited to `approvals.max_pending_per_agent` open approvals so it cannot flood the queue.
+
 ## Pipeline
 Agent → Gateway → [schema + catalog validation → provenance → deterministic policy → risk → anomaly] → decision (allow | allow+monitor | human approval | block) → **audit (before execution)** → Execution Gateway (decision-token + action-hash recheck) → resource → verification → audit.
 
@@ -48,4 +53,4 @@ Hard policy decides first. Risk and anomaly can only escalate, never overturn a 
 - `DECISIONS.md` decision log (append, never rewrite)
 
 ## Status
-MVP (Phase 1): gateway, policy engine, provenance, risk, heuristic anomaly, SQLite audit chain, mock security-ops resource, dashboard. Known limits are listed in DECISIONS.md D-016 to D-020 (no authentication yet, heuristic anomaly model, SQLite audit store; provenance only sees data ingested through VETO-registered channels, and session taint trades some availability for integrity).
+MVP (Phase 1): gateway, policy engine, provenance, risk, heuristic anomaly, SQLite audit chain, mock security-ops resource, dashboard. Known limits are listed in DECISIONS.md D-016 to D-021 (heuristic anomaly model, SQLite audit store, no rate limiting on failed sign-ins, no key expiry or mTLS yet; provenance only sees data ingested through VETO-registered channels, and session taint trades some availability for integrity).

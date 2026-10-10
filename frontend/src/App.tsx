@@ -1,10 +1,11 @@
-import { Activity, Inbox, Power, ScrollText } from "lucide-react";
+import { Activity, Inbox, LogOut, Power, ScrollText } from "lucide-react";
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { api } from "./api";
+import { api, auth, type Me } from "./api";
 import { Approvals } from "./Approvals";
 import { Audit } from "./Audit";
 import { Containment } from "./Containment";
 import { Live } from "./Live";
+import { Login } from "./Login";
 import type { AppState, AuditRecord, RequestRow, Scenario } from "./types";
 import { cx } from "./ui";
 
@@ -27,6 +28,22 @@ function Logo() {
 }
 
 export default function App() {
+  const [me, setMe] = useState<Me | null>(null);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    auth.onUnauthorized(() => { auth.clear(); setMe(null); });
+    if (!auth.get()) { setChecking(false); return; }
+    api.me().then(setMe).catch(() => auth.clear()).finally(() => setChecking(false));
+  }, []);
+
+  if (checking) return <div className="py-24 text-center text-muted">Connecting to gateway…</div>;
+  if (!me) return <Login onLogin={setMe} />;
+  return <Dashboard me={me} signOut={() => { auth.clear(); setMe(null); }} />;
+}
+
+function Dashboard({ me, signOut }: { me: Me; signOut: () => void }) {
+  const canOperate = me.roles.includes("operator");
   const [tab, setTab] = useState<Tab>("live");
   const [state, setState] = useState<AppState | null>(null);
   const [rows, setRows] = useState<RequestRow[]>([]);
@@ -47,8 +64,8 @@ export default function App() {
   }, [tab]);
 
   useEffect(() => {
-    api.scenarios().then(setScenarios).catch(() => undefined);
-  }, []);
+    if (canOperate && me.demo) api.scenarios().then(setScenarios).catch(() => undefined);
+  }, [canOperate, me.demo]);
   useEffect(() => {
     refresh();
     const t = setInterval(refresh, 1000);
@@ -90,6 +107,11 @@ export default function App() {
                 </span>
               </Fragment>
             )}
+            {state?.auth && state.auth.failures > 0 && <span title="Rejected authentication attempts" className="text-warn">auth failures {state.auth.failures}</span>}
+            <span className="flex items-center gap-2 text-ink" title={me.roles.join(", ")}>
+              {me.id}
+              <button className="btn !px-2 !py-1" onClick={signOut} aria-label="Sign out"><LogOut size={12} /></button>
+            </span>
             <span className={cx("flex items-center gap-1.5", offline ? "text-bad" : "text-ok")}>
               <span className={cx("h-1.5 w-1.5 rounded-full", offline ? "bg-bad" : "bg-ok")} />{offline ? "gateway offline" : "gateway online"}
             </span>
@@ -101,11 +123,11 @@ export default function App() {
         {!state ? (
           <div className="py-24 text-center text-muted">{offline ? "Cannot reach the VETO gateway on this host." : "Connecting to gateway…"}</div>
         ) : tab === "live" ? (
-          <Live state={state} rows={rows} scenarios={scenarios} refresh={refresh} />
+          <Live state={state} rows={rows} scenarios={scenarios} refresh={refresh} canOperate={canOperate} />
         ) : tab === "approvals" ? (
-          <Approvals rows={rows} refresh={refresh} />
+          <Approvals rows={rows} refresh={refresh} me={me} />
         ) : tab === "containment" ? (
-          <Containment state={state} rows={rows} refresh={refresh} />
+          <Containment state={state} rows={rows} refresh={refresh} canOperate={canOperate} />
         ) : (
           <Audit state={state} records={audit} />
         )}

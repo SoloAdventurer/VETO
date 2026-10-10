@@ -33,6 +33,8 @@ limits:                       # counters usable in rules; counted per agent over
 
 provenance:
   session_taint_window_s: 900   # untrusted data an agent ingested taints everything it does for 15 min (0 = off)
+approvals:
+  max_pending_per_agent: 10   # T7: an agent cannot flood the approval queue; further escalations are blocked
 
 rules:
   - id: deny-containment

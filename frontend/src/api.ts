@@ -1,10 +1,25 @@
 import type { AppState, AuditRecord, ChainStatus, RequestRow, Scenario } from "./types";
 
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
+const KEY = "veto.apikey";
+let onUnauthorized: () => void = () => undefined;
+export const auth = {
+  get: (): string | null => {
+    try { return sessionStorage.getItem(KEY); } catch { return null; }
+  },
+  set: (k: string) => { try { sessionStorage.setItem(KEY, k); } catch { /* storage blocked */ } },
+  clear: () => { try { sessionStorage.removeItem(KEY); } catch { /* storage blocked */ } },
+  onUnauthorized: (fn: () => void) => { onUnauthorized = fn; },
+};
+
+export interface Me { id: string; roles: string[]; demo: boolean }
+
+async function call<T>(path: string, init?: RequestInit, key?: string): Promise<T> {
+  const token = key ?? auth.get();
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     ...init,
   });
+  if (res.status === 401 && key === undefined) onUnauthorized();
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -21,6 +36,7 @@ const post = <T>(path: string, body?: unknown) =>
   call<T>(path, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) });
 
 export const api = {
+  me: (key?: string) => call<Me>("/v1/auth/me", undefined, key ?? auth.get() ?? ""),
   state: () => call<AppState>("/v1/state"),
   requests: () => call<RequestRow[]>("/v1/requests?limit=200"),
   audit: () => call<AuditRecord[]>("/v1/audit?limit=500"),
@@ -28,10 +44,8 @@ export const api = {
   scenarios: () => call<Scenario[]>("/v1/demo/scenarios"),
   runScenario: (id: string) => post<{ scenario: string }>(`/v1/demo/scenarios/${id}`),
   reset: () => post<{ ok: boolean }>("/v1/demo/reset"),
-  approve: (id: string, approver: string, outcome: "approved" | "rejected", note = "") =>
-    post(`/v1/approvals/${id}`, { approver_id: approver, outcome, note }),
-  resetContext: (agentId: string, by: string) =>
-    post(`/v1/operator/agents/${agentId}/context-reset`, { by }),
-  containment: (active: boolean, by: string, reason: string) =>
-    post("/v1/containment", { active, by, reason }),
+  approve: (id: string, outcome: "approved" | "rejected", note = "") =>
+    post(`/v1/approvals/${id}`, { outcome, note }),
+  resetContext: (agentId: string) => post(`/v1/operator/agents/${agentId}/context-reset`),
+  containment: (active: boolean, reason: string) => post("/v1/containment", { active, reason }),
 };

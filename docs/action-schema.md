@@ -45,7 +45,7 @@ Expected result: **block**. The authority claim comes from `sensor_ocr` (untrust
 
 Effective provenance of an action = lowest-trust origin among its inputs. Any untrusted origin marks the action `tainted`.
 
-**Session taint.** Inputs are not only what the agent declares. Every untrusted observation an agent registered (took in through VETO) within the taint window (policy `provenance.session_taint_window_s`, default 900 s, 0 = off) and since its last context reset is added to the action's inputs by VETO (`provenance_detail[].via = "ambient"`). An agent therefore cannot avoid taint by not mentioning what it read. An operator ends a session's taint with an authenticated, audited `POST /v1/operator/agents/{agent_id}/context-reset`. Agent-submitted observations (`POST /v1/observations?agent_id=...`) can never be trusted. Limitation: only data ingested through VETO-registered channels is visible; the MCP proxy (D-008) is the planned way to cover the rest.
+**Session taint.** Inputs are not only what the agent declares. Every untrusted observation an agent registered (took in through VETO) within the taint window (policy `provenance.session_taint_window_s`, default 900 s, 0 = off) and since its last context reset is added to the action's inputs by VETO (`provenance_detail[].via = "ambient"`). An agent therefore cannot avoid taint by not mentioning what it read. An operator ends a session's taint with an authenticated, audited `POST /v1/operator/agents/{agent_id}/context-reset`. Agent-submitted observations (`POST /v1/observations`) can never be trusted. Limitation: only data ingested through VETO-registered channels is visible; the MCP proxy (D-008) is the planned way to cover the rest.
 
 ## Action catalog (v0.1 demo set)
 Verb naming: `VERB_NOUN`, upper snake case. Each entry declares: parameter schema, `sensitivity` (0-30), reversible (bool), expected-effect check for verification.
@@ -65,15 +65,21 @@ Domain packs add verbs (e.g. a healthcare pack in a private repo). Core never ha
 See `schemas/decision.schema.json`. Key fields: `action_hash`, `effective_provenance`, `policies_evaluated`, `risk`, `anomaly`, `decision`, `human_decision`, `execution`, `verification`, `prev_hash`/`record_hash` (hash chain).
 
 ## Gateway API (v0.1)
+Auth: `Authorization: Bearer veto_...` on everything except `GET /healthz` and `GET /v1/auth/info`. Identity is the key's principal; `agent_id` in an action body must equal it (else 403, audited as `builtin:identity-mismatch`). Roles: agent (propose, observe, read own requests), operator (operator observations, context reset, containment, demo), approver (resolve approvals), viewer/operator/approver/admin (read state and audit), admin (principal and key management, audited). 401 = no or bad key, 403 = wrong role.
+
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/v1/observations?agent_id=` | register an observation an agent ingested, returns provenance label (never trusted) |
-| POST | `/v1/operator/observations?agent_id=` | operator-channel observation (can be trusted; bound to one agent) |
+| GET | `/v1/auth/me` | who the key belongs to, its roles |
+| GET, POST | `/v1/admin/principals` | list / create principals (admin) |
+| POST | `/v1/admin/principals/{id}/keys`, `/v1/admin/principals/{id}/disable` | issue a key (shown once) / disable a principal and revoke its keys (admin) |
+| DELETE | `/v1/admin/keys/{key_id}` | revoke a key (admin) |
+| POST | `/v1/observations` | register an observation the calling agent ingested, returns provenance label (never trusted) |
+| POST | `/v1/operator/observations?agent_id=` | operator-channel observation (operator role; can be trusted; bound to the named agent) |
 | POST | `/v1/operator/agents/{id}/context-reset` | clear an agent's session taint (audited) |
 | POST | `/v1/actions` | submit proposal, returns decision (and execution result if allowed) |
 | GET | `/v1/actions/{id}` | status (pending approval, executed, verified) |
-| POST | `/v1/approvals/{id}` | approver resolves escalation |
-| POST | `/v1/containment` | engage/release kill switch (admin) |
+| POST | `/v1/approvals/{id}` | approver resolves escalation; approver id is the key's principal |
+| POST | `/v1/containment` | engage/release kill switch (operator) |
 | GET | `/v1/audit` | query audit trail (read-only) |
 
 Response to `/v1/actions`:
