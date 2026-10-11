@@ -7,6 +7,7 @@ Combination: deny > require_approval > monitor > allow. No matching allow -> den
 from __future__ import annotations
 
 import fnmatch
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -69,12 +70,36 @@ def validate_policy(policy: dict) -> list[str]:
     cap = policy.get("approvals", {}).get("max_pending_per_agent", 10)
     if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
         errors.append("approvals.max_pending_per_agent must be an integer >= 1")
+    if "expire_after_s" in policy.get("approvals", {}):
+        ttl = policy["approvals"]["expire_after_s"]
+        if not isinstance(ttl, (int, float)) or isinstance(ttl, bool) or ttl <= 0:
+            errors.append("approvals.expire_after_s must be a positive number of seconds")
+    errors.extend(_validate_working_hours(policy.get("anomaly", {}).get("working_hours")))
     for name, spec in policy.get("limits", {}).items():
         for key in ("window", "action", "metric"):
             if key not in spec:
                 errors.append(f"limit {name}: missing '{key}'")
         if spec.get("metric") == "sum" and "param" not in spec:
             errors.append(f"limit {name}: metric 'sum' needs 'param'")
+    return errors
+
+
+_HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _validate_working_hours(wh: Any) -> list[str]:
+    if wh is None:
+        return []
+    if not isinstance(wh, dict):
+        return ["anomaly.working_hours must be a mapping with start, end and weekdays"]
+    errors = []
+    for key in ("start", "end"):
+        if not isinstance(wh.get(key), str) or not _HHMM.match(wh[key]):
+            errors.append(f"anomaly.working_hours.{key} must be HH:MM (24h, UTC)")
+    days = wh.get("weekdays")
+    if (not isinstance(days, list) or not days
+            or any(not isinstance(d, int) or isinstance(d, bool) or not 0 <= d <= 6 for d in days)):
+        errors.append("anomaly.working_hours.weekdays must be a non-empty list of 0 (Mon) to 6 (Sun)")
     return errors
 
 

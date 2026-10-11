@@ -13,6 +13,7 @@ const STATUS: Record<Status, { label: string; cls: string; icon: ReactNode }> = 
   blocked: { label: "Blocked", cls: "text-bad border-bad/40 bg-bad/10", icon: <Ban size={13} /> },
   pending_approval: { label: "Awaiting human", cls: "text-warn border-warn/40 bg-warn/10", icon: <Clock size={13} /> },
   rejected: { label: "Rejected by human", cls: "text-bad border-bad/40 bg-bad/10", icon: <XCircle size={13} /> },
+  expired: { label: "Expired · not executed", cls: "text-muted border-line bg-panel2", icon: <Clock size={13} /> },
   failed: { label: "Failed", cls: "text-warn border-warn/40 bg-warn/10", icon: <AlertTriangle size={13} /> },
   pending_execution: { label: "Pending", cls: "text-muted border-line bg-panel2", icon: <Clock size={13} /> },
 };

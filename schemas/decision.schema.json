@@ -121,6 +121,12 @@
         },
         "model_version": {
           "type": "string"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },

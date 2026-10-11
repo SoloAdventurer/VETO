@@ -31,6 +31,7 @@ from veto.provenance.registry import DEFAULT_TAINT_WINDOW_S, ProvenanceRegistry
 from veto.risk.scorer import score_risk
 from veto.verification.verifier import verify_effect
 
+DEFAULT_APPROVAL_EXPIRY_S = 3600.0
 SEVERITY = {"allow": 0, "allow_monitor": 1, "require_approval": 2, "block": 3}
 POLICY_TO_DECISION = {"allow": "allow", "monitor": "allow_monitor", "require_approval": "require_approval",
                       "deny": "block"}
@@ -42,6 +43,10 @@ class RequestError(Exception):
     def __init__(self, message: str, status: int = 400) -> None:
         super().__init__(message)
         self.status = status
+
+
+def _epoch(iso: str) -> float:
+    return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
 
 
 def _iso_now() -> str:
@@ -56,7 +61,7 @@ class GatewayService:
         self.engine = PolicyEngine(self.policy.raw)
         self.audit = AuditLog(db_path)
         self.prov = ProvenanceRegistry()
-        self.anomaly = AnomalyDetector()
+        self.anomaly = AnomalyDetector(working_hours=self.policy.raw.get("anomaly", {}).get("working_hours"))
         self.containment = False
         self.tags: dict[str, dict] = {}
         self._history: list[dict] = []        # executed actions, for windowed counters
@@ -68,13 +73,19 @@ class GatewayService:
         self.signer = DecisionSigner(secrets.token_bytes(32))
         self.execution = ExecutionGateway(self.resource, access_key, self.signer, lambda: self.containment)
         self.view = self.resource.trusted
-        self._pending: dict[str, str] = {}    # request_id -> agent_id, awaiting human approval (T7 cap)
+        # request_id -> (agent_id, held_at) for requests awaiting a human: drives the T7 cap and approval expiry
         latest = {rec["request_id"]: rec for rec in self.audit.all()}
-        self._pending = {rid: rec["agent_id"] for rid, rec in latest.items() if status_of(rec) == "pending_approval"}
+        self._pending: dict[str, tuple[str, float]] = {
+            rid: (rec["agent_id"], _epoch(rec["timestamp"]))
+            for rid, rec in latest.items() if status_of(rec) == "pending_approval"}
 
     @property
     def max_pending_per_agent(self) -> int:
         return self.policy.raw.get("approvals", {}).get("max_pending_per_agent", 10)
+
+    @property
+    def approval_expiry_s(self) -> float:
+        return self.policy.raw.get("approvals", {}).get("expire_after_s", DEFAULT_APPROVAL_EXPIRY_S)
 
     @property
     def taint_window_s(self) -> float:
@@ -158,9 +169,28 @@ class GatewayService:
         })
         return {**self._response(rec), "identity_mismatch": True}
 
+    def sweep_expired(self) -> int:
+        """Auto-expire approvals nobody decided in time (policy approvals.expire_after_s): audited, never executed."""
+        with self._lock:
+            now = self.clock()
+            due = [rid for rid, (_, held_at) in self._pending.items() if now - held_at >= self.approval_expiry_s]
+            for rid in due:
+                rec = self.audit.latest_for_request(rid)
+                self._pending.pop(rid, None)
+                if rec is None or rec["decision"] != "require_approval" or rec.get("human_decision"):
+                    continue
+                base = _strip_chain(rec)
+                base["human_decision"] = {"approver_id": "system", "outcome": "expired", "timestamp": _iso_now(),
+                                          "note": f"no decision within {self.approval_expiry_s:g}s; treated as block"}
+                base["execution"] = {"status": "not_executed", "adapter": ExecutionGateway.ADAPTER,
+                                     "result_summary": "approval expired"}
+                self._append(base)
+            return len(due)
+
     def propose_action(self, payload: dict, tags: dict | None = None, authenticated_as: str | None = None) -> dict:
         """`authenticated_as` is the agent id bound to the caller's API key; None only for in-process harness use."""
         with self._lock:
+            self.sweep_expired()
             request_id = f"req-{uuid.uuid4().hex[:12]}"
             if tags:
                 self.tags[request_id] = tags
@@ -210,7 +240,7 @@ class GatewayService:
 
             policies = list(pres.evaluated)
             if decision == "require_approval":
-                pending = sum(1 for a in self._pending.values() if a == agent_id)
+                pending = sum(1 for a, _ in self._pending.values() if a == agent_id)
                 if pending >= self.max_pending_per_agent:
                     decision = "block"
                     reason = (f"Approval queue cap reached ({pending} pending for {agent_id}); "
@@ -233,7 +263,7 @@ class GatewayService:
             })
             self.anomaly.observe(agent_id, verb, target["id"], now_ts)
             if decision == "require_approval":
-                self._pending[request_id] = agent_id
+                self._pending[request_id] = (agent_id, now_ts)
             if decision in ("allow", "allow_monitor"):
                 rec = self._execute(rec, "allow")
             return self._response(rec)
@@ -261,6 +291,7 @@ class GatewayService:
         if outcome not in ("approved", "rejected"):
             raise RequestError("outcome must be 'approved' or 'rejected'")
         with self._lock:
+            self.sweep_expired()
             rec = self.audit.latest_for_request(request_id)
             if rec is None:
                 raise RequestError("unknown request", 404)
@@ -372,6 +403,7 @@ class GatewayService:
     # ------------------------------------------------------------------ read models
     def requests_view(self, limit: int = 200) -> list[dict]:
         """Latest snapshot per request, newest first, with derived status and demo tags."""
+        self.sweep_expired()
         latest: dict[str, dict] = {}
         first: dict[str, dict] = {}
         n_events: dict[str, int] = {}
@@ -420,8 +452,8 @@ def status_of(rec: dict) -> str:
     if rec["decision"] == "require_approval":
         if not hd:
             return "pending_approval"
-        if hd["outcome"] == "rejected":
-            return "rejected"
+        if hd["outcome"] in ("rejected", "expired"):
+            return hd["outcome"]
     if ex is None:
         return "pending_execution"
     if ex["status"] == "executed":

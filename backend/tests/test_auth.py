@@ -22,7 +22,7 @@ def bearer(key):
 def env():
     store = PrincipalStore()
     svc = GatewayService()
-    c = TestClient(create_app(svc, demo=True, store=store, bootstrap_key=ADMIN))
+    c = TestClient(create_app(svc, demo=True, store=store, bootstrap_key=ADMIN, auth_max_failures=10_000))
     admin = bearer(ADMIN)
 
     def mint(pid, roles):

@@ -6,6 +6,7 @@ export type Status =
   | "blocked"
   | "pending_approval"
   | "rejected"
+  | "expired"
   | "failed"
   | "pending_execution";
 
@@ -19,6 +20,7 @@ export interface Anomaly {
   score: number;
   flagged: boolean;
   model_version: string;
+  reasons?: string[];
 }
 
 export interface RuleEval {
@@ -112,7 +114,7 @@ export interface AgentView {
 export interface AppState {
   agents: AgentView[];
   taint_window_s: number;
-  auth?: { failures: number };
+  auth?: { failures: number; rate_limited?: number; lockouts?: number };
   containment: boolean;
   doors: Door[];
   personnel: Person[];

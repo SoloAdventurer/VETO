@@ -24,7 +24,8 @@ roles:            # RBAC: which verbs/resources a role may even request
 agents:           # agent identity -> role, base risk
   ops-agent-1: { role: analyst, base_risk: 10 }
 provenance: { session_taint_window_s: 900 }   # untrusted data an agent ingested taints all its actions for this long (0 = off)
-approvals: { max_pending_per_agent: 10 }       # T7: further escalations from an agent with this many open approvals are blocked
+approvals: { max_pending_per_agent: 10, expire_after_s: 3600 }   # T7: cap on open approvals per agent; undecided approvals expire to block
+anomaly: { working_hours: { start: "08:00", end: "18:00", weekdays: [0,1,2,3,4] } }   # optional, UTC, 0 = Monday; soft signal only
 risk_bands: { low: [0,30], medium: [31,60], high: [61,80], critical: [81,100] }
 band_effects: { low: allow, medium: allow_monitor, high: require_approval, critical: block }
 limits:           # named counters usable in rules; counted per agent over EXECUTED actions in the window
@@ -70,7 +71,7 @@ The key defence against sign/email injection. Every action that depends on an au
 |---|---|
 | allow | execute |
 | monitor | execute with enhanced logging and post-checks |
-| require_approval | hold; send to approval queue with provenance shown; auto-expire -> block |
+| require_approval | hold; send to approval queue with provenance shown; after `approvals.expire_after_s` (default 3600) with no decision it expires to block (audited as `human_decision.outcome = expired`, approver `system`) and can no longer be approved |
 | deny | block |
 
 ## Testing policies

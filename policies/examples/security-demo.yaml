@@ -35,6 +35,9 @@ provenance:
   session_taint_window_s: 900   # untrusted data an agent ingested taints everything it does for 15 min (0 = off)
 approvals:
   max_pending_per_agent: 10   # T7: an agent cannot flood the approval queue; further escalations are blocked
+  expire_after_s: 3600        # an approval nobody decides within an hour expires to a block; it never executes late
+# anomaly:                      # optional soft signal, off unless declared (never flags on its own)
+#   working_hours: { start: "08:00", end: "18:00", weekdays: [0, 1, 2, 3, 4] }   # UTC, 0 = Monday
 
 rules:
   - id: deny-containment

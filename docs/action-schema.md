@@ -65,7 +65,7 @@ Domain packs add verbs (e.g. a healthcare pack in a private repo). Core never ha
 See `schemas/decision.schema.json`. Key fields: `action_hash`, `effective_provenance`, `policies_evaluated`, `risk`, `anomaly`, `decision`, `human_decision`, `execution`, `verification`, `prev_hash`/`record_hash` (hash chain).
 
 ## Gateway API (v0.1)
-Auth: `Authorization: Bearer veto_...` on everything except `GET /healthz` and `GET /v1/auth/info`. Identity is the key's principal; `agent_id` in an action body must equal it (else 403, audited as `builtin:identity-mismatch`). Roles: agent (propose, observe, read own requests), operator (operator observations, context reset, containment, demo), approver (resolve approvals), viewer/operator/approver/admin (read state and audit), admin (principal and key management, audited). 401 = no or bad key, 403 = wrong role.
+Auth: `Authorization: Bearer veto_...` on everything except `GET /healthz` and `GET /v1/auth/info`. Identity is the key's principal; `agent_id` in an action body must equal it (else 403, audited as `builtin:identity-mismatch`). Roles: agent (propose, observe, read own requests), operator (operator observations, context reset, containment, demo), approver (resolve approvals), viewer/operator/approver/admin (read state and audit), admin (principal and key management, audited). 401 = no or bad key, 403 = wrong role, 429 = rate limited or locked out (with `Retry-After`).
 
 | Method | Path | Purpose |
 |---|---|---|

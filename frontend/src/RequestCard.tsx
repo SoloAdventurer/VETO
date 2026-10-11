@@ -59,6 +59,11 @@ export function RequestDetails({ r }: { r: RequestRow }) {
               total {r.risk.score}/100 · anomaly {r.anomaly?.score ?? 0}
               {r.anomaly?.flagged && <span className="ml-1 text-warn">flagged</span>}
             </div>
+            {r.anomaly?.reasons && r.anomaly.reasons.length > 0 && (
+              <ul className="mt-1 space-y-0.5 text-[11px] text-warn">
+                {r.anomaly.reasons.map((reason) => <li key={reason}>· {reason}</li>)}
+              </ul>
+            )}
           </div>
         ) : (
           <div className="text-[12px] text-muted">Rejected before scoring.</div>

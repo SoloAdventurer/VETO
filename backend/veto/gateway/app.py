@@ -8,9 +8,12 @@ viewer or admin. The demo endpoints (/v1/demo/*) exist only when VETO_DEMO=1 and
 
 from __future__ import annotations
 
+import math
 import os
 import secrets
 import sys
+import time
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -19,6 +22,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from veto.auth.store import AuthError, Principal, PrincipalStore
+from veto.gateway.ratelimit import FailureLockout, TokenBucketLimiter
 from veto.gateway.scenarios import list_scenarios, run_scenario
 from veto.gateway.service import GatewayService, RequestError
 from veto.paths import UI_DIR
@@ -30,8 +34,20 @@ class _Holder:
     service: GatewayService
 
 
+def _env_rate(name: str, default: tuple[float, int]) -> tuple[float, int]:
+    """VETO_<NAME>=<requests per minute>[,<burst>]"""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    parts = raw.split(",")
+    return float(parts[0]), int(parts[1]) if len(parts) > 1 else default[1]
+
+
 def create_app(service: GatewayService | None = None, demo: bool | None = None,
-               store: PrincipalStore | None = None, bootstrap_key: str | None = None) -> FastAPI:
+               store: PrincipalStore | None = None, bootstrap_key: str | None = None,
+               clock: Callable[[], float] = time.time, agent_rate: tuple[float, int] | None = None,
+               human_rate: tuple[float, int] | None = None, auth_max_failures: int | None = None,
+               auth_lockout_s: float | None = None) -> FastAPI:
     holder = _Holder()
     holder.service = service or GatewayService(db_path=os.environ.get("VETO_DB", ":memory:"))
     demo_enabled = demo if demo is not None else os.environ.get("VETO_DEMO", "1") == "1"
@@ -45,16 +61,37 @@ def create_app(service: GatewayService | None = None, demo: bool | None = None,
         print(f"VETO: no principals exist. One-time bootstrap admin key (shown once): {key}", file=sys.stderr)
 
     public = {"/healthz", "/v1/auth/info"}
+    # Agents get a tighter default than people (a dashboard polls about twice a second).
+    arate = agent_rate or _env_rate("VETO_AGENT_RATE", (300.0, 60))
+    hrate = human_rate or _env_rate("VETO_HUMAN_RATE", (1200.0, 240))
+    agent_limiter = TokenBucketLimiter(arate[0], arate[1], clock)
+    human_limiter = TokenBucketLimiter(hrate[0], hrate[1], clock)
+    lockout = FailureLockout(
+        max_failures=(auth_max_failures if auth_max_failures is not None
+                      else int(os.environ.get("VETO_AUTH_MAX_FAILURES", "10"))),
+        lockout_s=(auth_lockout_s if auth_lockout_s is not None
+                   else float(os.environ.get("VETO_AUTH_LOCKOUT_S", "300"))),
+        clock=clock)
+    throttle = {"rate_limited": 0}
 
     def authenticate(request: Request) -> None:
         """Runs before request bodies are parsed, so unauthenticated callers always get 401, never 422."""
         if request.url.path in public:
             return
+        client = request.client.host if request.client else "unknown"
+        wait = lockout.blocked(client)
+        if wait:
+            raise HTTPException(429, "too many failed sign-ins; try again later", headers={"Retry-After": str(wait)})
         header = request.headers.get("authorization", "")
         token = header[7:].strip() if header.lower().startswith("bearer ") else None
         principal = principals.authenticate(token)
         if principal is None:
+            lockout.record_failure(client)
             raise HTTPException(401, "missing, invalid or revoked API key", headers={"WWW-Authenticate": "Bearer"})
+        allowed, retry = (agent_limiter if principal.has("agent") else human_limiter).allow(principal.id)
+        if not allowed:
+            throttle["rate_limited"] += 1
+            raise HTTPException(429, "rate limit exceeded", headers={"Retry-After": str(max(1, math.ceil(retry)))})
         request.state.principal = principal
 
     app = FastAPI(title="VETO Gateway", version="0.1.0", dependencies=[Depends(authenticate)],
@@ -154,7 +191,9 @@ def create_app(service: GatewayService | None = None, demo: bool | None = None,
     @app.get("/v1/state")
     def get_state(request: Request):
         who(request, *READERS)
-        return {**holder.service.state(), "auth": {"failures": principals.failures}}
+        return {**holder.service.state(),
+                "auth": {"failures": principals.failures, "rate_limited": throttle["rate_limited"],
+                         "lockouts": lockout.lockouts}}
 
     # ---- administration (every change is audited)
     @app.get("/v1/admin/principals")
