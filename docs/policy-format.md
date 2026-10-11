@@ -84,10 +84,22 @@ Every rule needs at least one **positive** and one **negative** test case in `po
 ```
 CI runs the labelled set (target ~1,000 actions) and fails on any false allow.
 
+## Changing a policy while running (D-028)
+Every policy, whether shipped, given to a new tenant or proposed later, passes `lint_policy` before the grammar check:
+required sections; unique rule ids and priorities; a reason on every rule; `default_effect: deny`; the rule with the lowest priority number must be exactly `when: {containment: {eq: true}}` with effect `deny`; no allow rule may mention an untrusted origin (`sensor_ocr`, `email`, `web`, `external_document`, `unknown`, `model_generated`); no allow rule without a condition; at most 64,000 characters.
+
+API (admin to propose, activate, reject; any human role to read; agents cannot read the policy):
+- `GET /v1/policy`: active id, version, `fault`, active text and version history.
+- `POST /v1/policy/proposals` `{"policy": "<yaml>"}`: lints, stores, returns the diff (`added`, `removed`, `changed`, `other_sections`, `loosens`, `reasons`). Nothing changes yet.
+- `GET /v1/policy/proposals`, `GET /v1/policy/proposals/{v}`.
+- `POST /v1/policy/proposals/{v}/activate`: must be a different admin than the proposer; writes `POLICY_ACTIVATED` (full text and SHA-256) to the chain, then installs it. Other gateway processes apply it from the chain.
+- `POST /v1/policy/proposals/{v}/reject`.
+Change the policy `version` string with each edit; every decision records `policy_version` as `id@version+content-hash`.
+
 ## Packs
 Core ships generic rules only. Industry packs (security demo, healthcare, finance) are separate policy directories with their own action catalog entries. The healthcare pack lives in a private repo (DECISIONS D-005).
 
 ## Open questions
 - Q1: Policy signing (detached signatures) in v0.2.
-- Q2: Hot reload vs restart-only (leaning restart-only for v1).
+- Q2: Hot reload: resolved in D-028. Policies change only through the audited propose/activate flow below; no file watching.
 - Q3: Counter storage (in-memory vs PostgreSQL) for multi-instance.

@@ -8,6 +8,7 @@ viewer or admin. The demo endpoints (/v1/demo/*) exist only when VETO_DEMO=1 and
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import secrets
@@ -22,11 +23,13 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from veto.auth.store import HUMAN_ROLES, AuthError, Principal, PrincipalStore
+from veto.canonical import sha256_hex
 from veto.gateway.platform import PlatformLog, Runtimes
 from veto.gateway.ratelimit import FailureLockout, TokenBucketLimiter
 from veto.gateway.scenarios import list_scenarios, run_scenario
 from veto.gateway.service import GatewayService, RequestError
 from veto.paths import UI_DIR
+from veto.policy.lint import diff_policies
 from veto.policy.loader import load_policy_text
 
 READERS = ("viewer", "operator", "approver", "admin")
@@ -109,6 +112,7 @@ def create_app(service: GatewayService | None = None, demo: bool | None = None,
     app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
                        allow_methods=["*"], allow_headers=["*"])
     app.state.principals = principals
+    app.state.runtimes = runtimes
     app.state.db_target = _db
 
     def guard(fn):
@@ -254,6 +258,74 @@ def create_app(service: GatewayService | None = None, demo: bool | None = None,
         svc(request).record_system_event(p.id, "DISABLE_PRINCIPAL", {"id": pid},
                                            f"Principal {pid} disabled by {p.id}; keys revoked")
         return {"disabled": pid}
+
+    # ---- policy editing (D-028): propose -> a different admin activates; every step is audited
+    def _version_or_404(tenant: str, version: int) -> dict:
+        row = principals.get_policy_version(tenant, version, with_text=True)
+        if row is None:
+            raise HTTPException(404, "unknown policy version")
+        return row
+
+    @app.get("/v1/policy")
+    def get_policy(request: Request):
+        who(request, *READERS)
+        s = svc(request)
+        t = request.state.principal.tenant
+        text = principals.active_policy_text(t)
+        return {"policy_id": s.policy.policy_id, "version": s.policy.version, "fault": s._policy_fault,
+                "text": text, "history": principals.list_policy_versions(t)}
+
+    @app.post("/v1/policy/proposals")
+    def policy_propose(request: Request, payload: dict[str, Any]):
+        p = who(request, "admin")
+        text = payload.get("policy")
+        if not isinstance(text, str) or not text.strip():
+            raise HTTPException(422, "policy (YAML text) is required")
+        s = svc(request)
+        try:
+            new = load_policy_text(text)                       # size, lint, grammar: a bad policy is never stored
+        except Exception as exc:
+            raise HTTPException(422, f"invalid policy: {exc}") from exc
+        diff = diff_policies(s.policy.raw, new.raw)
+        version = principals.add_policy_proposal(p.tenant, text, sha256_hex(text), p.id, json.dumps(diff))
+        s.record_system_event(p.id, "POLICY_PROPOSED", {"version": version, "policy_sha256": sha256_hex(text),
+                                                        "loosens": diff["loosens"]},
+                              f"Policy v{version} proposed by {p.id}" + (" (loosens)" if diff["loosens"] else ""))
+        return {"version": version, "status": "proposed", "diff": diff}
+
+    @app.get("/v1/policy/proposals")
+    def policy_list(request: Request):
+        who(request, *READERS)
+        return principals.list_policy_versions(request.state.principal.tenant)
+
+    @app.get("/v1/policy/proposals/{version}")
+    def policy_get(request: Request, version: int):
+        who(request, *READERS)
+        return _version_or_404(request.state.principal.tenant, version)
+
+    @app.post("/v1/policy/proposals/{version}/activate")
+    def policy_activate(request: Request, version: int):
+        p = who(request, "admin")
+        row = _version_or_404(p.tenant, version)
+        if row["status"] != "proposed":
+            raise HTTPException(409, f"version is {row['status']}, only a proposed version can be activated")
+        if row["created_by"] == p.id:
+            raise HTTPException(403, "a policy cannot be activated by the person who proposed it")
+        result = guard(lambda: svc(request).activate_policy(
+            row["policy"], version=version, by=p.id, proposed_by=row["created_by"]))
+        principals.decide_policy_version(p.tenant, version, "active", p.id)
+        return {"version": version, "status": "active", **result}
+
+    @app.post("/v1/policy/proposals/{version}/reject")
+    def policy_reject(request: Request, version: int, payload: dict[str, Any] | None = None):
+        p = who(request, "admin")
+        row = _version_or_404(p.tenant, version)
+        if not principals.decide_policy_version(p.tenant, version, "rejected", p.id):
+            raise HTTPException(409, f"version is {row['status']}, only a proposed version can be rejected")
+        note = str((payload or {}).get("note", ""))[:300]
+        svc(request).record_system_event(p.id, "POLICY_REJECTED", {"version": version, "note": note},
+                                         f"Policy v{version} rejected by {p.id}")
+        return {"version": version, "status": "rejected"}
 
     # ---- platform administration (tenants and the global kill switch; never any decision content)
     @app.post("/v1/platform/tenants")

@@ -9,6 +9,7 @@ from pathlib import Path
 import yaml
 
 from veto.policy.engine import PolicyError, validate_policy
+from veto.policy.lint import MAX_POLICY_CHARS, lint_policy
 
 
 @dataclass(frozen=True)
@@ -24,8 +25,12 @@ def load_policy(path: Path | str) -> LoadedPolicy:
 
 def load_policy_text(text: str) -> LoadedPolicy:
     """Parse and validate a policy given as text (tenant policies are stored in the database)."""
+    if len(text) > MAX_POLICY_CHARS:
+        raise PolicyError(f"policy is larger than {MAX_POLICY_CHARS} characters")
     raw = yaml.safe_load(text)
-    errors = validate_policy(raw)
+    errors = lint_policy(raw)
+    if not errors:
+        errors = validate_policy(raw)
     if errors:
         raise PolicyError("; ".join(errors))
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]

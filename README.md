@@ -52,6 +52,9 @@ A restart never loosens anything. Containment, session taint, operator resets, v
 
 One deployment can serve many customers. Each tenant has its own policy, agents, keys, approval queue, kill switch and hash-chained audit log; the tenant comes only from the API key. A platform administrator (`VETO_PLATFORM_KEY=veto_<24+ chars>`) creates, suspends and resumes tenants through `/v1/platform/*` and has a global kill switch, but cannot act inside a tenant or read its decisions. The existing demo key belongs to the tenant `default`. See docs/multi-tenancy.md.
 
+## Editing policy
+A tenant admin proposes a new policy (`POST /v1/policy/proposals`), sees a diff that flags anything that loosens it, and a *different* admin activates it. A lint refuses any policy that removes the kill-switch rule, defaults to allow, or lets untrusted origins grant authority. The activation, with the full policy text and its hash, goes into the audit chain, so every decision can be tied to the exact policy that made it. See `docs/policy-format.md` and DECISIONS D-028.
+
 ## PostgreSQL
 
 `VETO_DB=postgresql://...` stores the audit log in PostgreSQL instead of SQLite (shared by several gateway processes, append-only enforced by the database). See docs/postgres.md for setup, privileges and limits.

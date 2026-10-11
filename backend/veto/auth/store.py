@@ -48,6 +48,11 @@ CREATE TABLE IF NOT EXISTS api_keys (
   revoked_at DOUBLE PRECISION,
   FOREIGN KEY (tenant, principal_id) REFERENCES principals (tenant, id)
 );
+CREATE TABLE IF NOT EXISTS policy_versions (
+  tenant TEXT NOT NULL, version INTEGER NOT NULL, policy TEXT NOT NULL, sha TEXT NOT NULL, created_by TEXT NOT NULL,
+  created_at DOUBLE PRECISION NOT NULL, status TEXT NOT NULL, decided_by TEXT, decided_at DOUBLE PRECISION,
+  diff TEXT NOT NULL, PRIMARY KEY (tenant, version)
+);
 CREATE TABLE IF NOT EXISTS platform_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
@@ -190,6 +195,71 @@ class PrincipalStore:
             self._db.commit()
             if cur.rowcount == 0:
                 raise AuthError("unknown tenant", 404)
+
+    # ---------------------------------------------------------------- policy proposals (always inside one tenant)
+    def add_policy_proposal(self, tenant: str, text: str, sha: str, by: str, diff_json: str) -> int:
+        for _ in range(3):                                       # another process may take the number first
+            with self._lock:
+                version = self._db.execute("SELECT COALESCE(MAX(version), 0) + 1 FROM policy_versions "
+                                           "WHERE tenant = ?", (tenant,)).fetchone()[0]
+                try:
+                    self._db.execute(
+                        "INSERT INTO policy_versions (tenant, version, policy, sha, created_by, created_at, status, "
+                        "diff) VALUES (?, ?, ?, ?, ?, ?, 'proposed', ?)",
+                        (tenant, version, text, sha, by, self._clock(), diff_json))
+                    self._db.commit()
+                    return version
+                except self._db.integrity_error:
+                    continue
+        raise AuthError("could not allocate a policy version; retry", 409)
+
+    _POLICY_COLS = "version, sha, created_by, created_at, status, decided_by, decided_at, diff"
+
+    def get_policy_version(self, tenant: str, version: int, with_text: bool = False) -> dict | None:
+        with self._lock:
+            row = self._db.execute(
+                f"SELECT {self._POLICY_COLS}, policy FROM policy_versions WHERE tenant = ? AND version = ?",  # noqa: S608
+                (tenant, version)).fetchone()
+        return self._policy_row(row, with_text) if row else None
+
+    def list_policy_versions(self, tenant: str) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT {self._POLICY_COLS}, policy FROM policy_versions WHERE tenant = ? "  # noqa: S608
+                "ORDER BY version DESC", (tenant,)).fetchall()
+        return [self._policy_row(r, False) for r in rows]
+
+    @staticmethod
+    def _policy_row(r, with_text: bool) -> dict:
+        import json
+        out = {"version": r[0], "sha256": r[1], "created_by": r[2], "created_at": r[3], "status": r[4],
+               "decided_by": r[5], "decided_at": r[6], "diff": json.loads(r[7])}
+        if with_text:
+            out["policy"] = r[8]
+        return out
+
+    def decide_policy_version(self, tenant: str, version: int, status: str, by: str) -> bool:
+        """proposed -> active | rejected, once. Activating supersedes the previously active version."""
+        if status not in ("active", "rejected"):
+            raise AuthError("status must be 'active' or 'rejected'")
+        with self._lock:
+            cur = self._db.execute(
+                "UPDATE policy_versions SET status = ?, decided_by = ?, decided_at = ? "
+                "WHERE tenant = ? AND version = ? AND status = 'proposed'",
+                (status, by, self._clock(), tenant, version))
+            if cur.rowcount == 0:
+                return False
+            if status == "active":
+                self._db.execute("UPDATE policy_versions SET status = 'superseded' WHERE tenant = ? AND version <> ? "
+                                 "AND status = 'active'", (tenant, version))
+            self._db.commit()
+            return True
+
+    def active_policy_text(self, tenant: str) -> str | None:
+        with self._lock:
+            row = self._db.execute("SELECT policy FROM policy_versions WHERE tenant = ? AND status = 'active' "
+                                   "ORDER BY decided_at DESC LIMIT 1", (tenant,)).fetchone()
+        return row[0] if row else None
 
     def platform_contained(self) -> bool:
         """Global kill switch: while on, every tenant's gateway blocks everything."""

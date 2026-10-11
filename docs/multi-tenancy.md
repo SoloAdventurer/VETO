@@ -46,4 +46,4 @@ Everything else is unchanged and operates inside the caller's tenant. `GET /v1/a
 * Each loaded tenant holds its own database connection and in-memory state; there is no eviction yet.
 * Principals, keys and tenants live in ordinary tables protected by application checks (row-level security covers the
   audit table); the tests in `tests/test_tenancy.py` cover them.
-* No policy editing, per-tenant resource credentials or tenant deletion/export yet.
+* No per-tenant resource credentials or tenant deletion/export yet. Policy editing exists (D-028): propose, then a different admin activates.

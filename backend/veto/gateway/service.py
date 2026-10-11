@@ -93,6 +93,8 @@ class GatewayService:
         self._seen_req: set[str] = set()
         self._counted: set[str] = set()
         self._restored_obs = 0
+        self._policy_fault = False
+        self._policy_sha: str | None = None            # hash of the installed policy text when it came from the chain
         self._start()
 
     @property
@@ -170,6 +172,8 @@ class GatewayService:
                 self.prov.reset_context(params["agent_id"])
             elif act == "SET_CONTAINMENT":
                 self.containment = bool(params["active"])
+            elif act == "POLICY_ACTIVATED":
+                self._apply_policy_event(params)
             elif act == "CHAIN_BROKEN":
                 self.containment = True
             return
@@ -190,6 +194,42 @@ class GatewayService:
             self._counted.add(rid)
             self._history.append({"agent_id": rec["agent_id"], "action": ra["action"],
                                   "params": ra.get("parameters") or {}, "ts": ts})
+
+    def _install_policy(self, text: str) -> None:
+        pol = load_policy_text(text)
+        self.policy = pol
+        self._policy_sha = sha256_hex(text)
+        self.engine = PolicyEngine(pol.raw)
+        self.anomaly.working_hours = pol.raw.get("anomaly", {}).get("working_hours")
+
+    def _apply_policy_event(self, params: dict) -> None:
+        """A policy activated by this or another process (or earlier in this log). The log carries the full text, so a
+        copy that does not match its recorded hash, or does not pass the lint, is tampering: fail closed."""
+        text = params.get("policy_text", "")
+        try:
+            if sha256_hex(text) != params.get("policy_sha256"):
+                raise ValueError("policy text does not match its recorded hash")
+            if params["policy_sha256"] != self._policy_sha:
+                self._install_policy(text)
+        except Exception:
+            self._containment = True
+            self._policy_fault = True
+
+    def activate_policy(self, text: str, *, version: int, by: str, proposed_by: str) -> dict:
+        """Make `text` this tenant's policy: validate, write the activation (with the full text) to the chain, then swap
+        it in. Other gateway processes pick it up from the chain on their next decision."""
+        try:
+            new = load_policy_text(text)
+        except Exception as exc:
+            raise RequestError(f"invalid policy: {exc}", 422) from exc
+        with self._txn():
+            previous = self.policy.version
+            self._log_event(by, "POLICY_ACTIVATED", {
+                "version": version, "policy_sha256": sha256_hex(text), "policy_text": text,
+                "policy_version": new.version, "previous_policy_version": previous, "proposed_by": proposed_by},
+                f"Policy v{version} ({new.version}) activated by {by}, proposed by {proposed_by}", prefix="sys")
+            self._install_policy(text)
+            return {"policy_version": new.version, "previous": previous}
 
     def _restore(self) -> dict:
         horizon = self._horizon()
@@ -593,7 +633,7 @@ class GatewayService:
                 "personnel": self.view.personnel(),
                 "incident_total": self.view.incident_total(), "stats": self.stats(), "chain": self.audit.verify(),
                 "agents": self.agents_view(), "taint_window_s": self.taint_window_s,
-                "policy": {"id": self.policy.policy_id, "version": self.policy.version,
+                "policy": {"id": self.policy.policy_id, "version": self.policy.version, "fault": self._policy_fault,
                            "rules": len(self.policy.raw["rules"]), "agents": self.policy.raw["agents"]}}
 
 

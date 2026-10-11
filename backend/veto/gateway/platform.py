@@ -50,7 +50,8 @@ class Runtimes:
         row = self._store.get_tenant(tenant)
         if row is None:
             raise KeyError(tenant)
-        return GatewayService(db_path=self._db, mode=self._mode, tenant=tenant, policy_text=row["policy"],
+        text = self._store.active_policy_text(tenant) or row["policy"]
+        return GatewayService(db_path=self._db, mode=self._mode, tenant=tenant, policy_text=text,
                               platform_check=self._store.platform_contained)
 
     def get(self, tenant: str) -> GatewayService:
