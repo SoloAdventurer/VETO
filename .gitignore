@@ -7,3 +7,4 @@ node_modules/
 frontend/dist/
 frontend/node_modules/
 *.db
+experiments/results/

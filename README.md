@@ -44,6 +44,10 @@ Every endpoint except `/healthz` needs `Authorization: Bearer veto_...`. Identit
 
 A restart never loosens anything. Containment, session taint, operator resets, volume counters and behavioural baselines are rebuilt from the audit log on start. If the log no longer verifies, the service starts in containment and records why.
 
+## Evaluation
+
+`python3 scripts/run_eval.py` runs ~940 labelled attack and legitimate cases through the real gateway under five configurations and writes `experiments/results/report.md` (UIR with confidence intervals, ablations, false blocks, latency). See DECISIONS D-024 for what the numbers do and do not show.
+
 ## Pipeline
 Agent → Gateway → [schema + catalog validation → provenance → deterministic policy → risk → anomaly] → decision (allow | allow+monitor | human approval | block) → **audit (before execution)** → Execution Gateway (decision-token + action-hash recheck) → resource → verification → audit.
 

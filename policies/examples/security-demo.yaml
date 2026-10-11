@@ -129,3 +129,15 @@ rules:
         - param.row_count: { lte: 100 }
         - provenance: { tainted: false }
     reason: Small export from clean context
+
+  - id: allow-external-message-allowlisted
+    description: Outbound messages only by the admin role, only to allowlisted domains, only from a clean context.
+    priority: 140
+    effect: allow
+    when:
+      all:
+        - action: { eq: SEND_EXTERNAL_MESSAGE }
+        - agent.role: { eq: admin_agent }
+        - param.recipient_domain: { in: [example.mil, partner.example] }
+        - provenance: { tainted: false }
+    reason: Allowlisted recipient from clean context
