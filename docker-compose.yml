@@ -10,6 +10,7 @@ services:
       VETO_DEMO: "1"
       VETO_DB: "/data/audit.db"   # audit log persists across restarts; use ":memory:" for a throwaway demo
       VETO_AUTH_DB: "/data/auth.db"
+      # VETO_MODE: "shadow"   # verdicts only, nothing enforced or executed (default: enforce)
       # DEMO-ONLY admin key so the dashboard can be signed in to. Override it (VETO_BOOTSTRAP_KEY=veto_...) for anything
       # beyond a local demo, and create real principals with scripts/veto_admin.py.
       VETO_BOOTSTRAP_KEY: "${VETO_BOOTSTRAP_KEY:-veto_demo-only-key-change-me-0000}"

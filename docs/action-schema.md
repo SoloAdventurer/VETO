@@ -62,6 +62,7 @@ Verb naming: `VERB_NOUN`, upper snake case. Each entry declares: parameter schem
 Domain packs add verbs (e.g. a healthcare pack in a private repo). Core never hard-codes them.
 
 ## Decision / evidence record
+Besides request records (`req-...`), the log holds two kinds of event: operator-facing events (`sys-...`: containment, context reset, principal and key changes) and quiet evidence (`log-...`: `REGISTER_OBSERVATION` with source, origin, hash of the content but never the content, `SERVICE_START`, `CHAIN_BROKEN`, harness resets). The service replays them on start. A record may carry `mode: "shadow"`, meaning the decision is a verdict only and nothing was executed.
 See `schemas/decision.schema.json`. Key fields: `action_hash`, `effective_provenance`, `policies_evaluated`, `risk`, `anomaly`, `decision`, `human_decision`, `execution`, `verification`, `prev_hash`/`record_hash` (hash chain).
 
 ## Gateway API (v0.1)

@@ -246,6 +246,12 @@
           }
         }
       }
+    },
+    "mode": {
+      "enum": [
+        "enforce",
+        "shadow"
+      ]
     }
   }
 }

@@ -8,6 +8,7 @@ Hard policy decides first; risk/anomaly can only escalate (invariants 2, 3, 6).
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import threading
 import time
@@ -22,7 +23,7 @@ from veto import catalog
 from veto.adapters.mock_security_ops import AccessDenied, MockSecurityOps
 from veto.anomaly.detector import AnomalyDetector
 from veto.audit.chain import AuditLog
-from veto.canonical import action_hash, canonical_action
+from veto.canonical import action_hash, canonical_action, canonical_json, sha256_hex
 from veto.execution.gateway import DecisionSigner, ExecutionGateway
 from veto.paths import DEFAULT_POLICY, SCHEMAS_DIR
 from veto.policy.engine import Facts, PolicyEngine
@@ -32,6 +33,8 @@ from veto.risk.scorer import score_risk
 from veto.verification.verifier import verify_effect
 
 DEFAULT_APPROVAL_EXPIRY_S = 3600.0
+MODES = ("enforce", "shadow")
+QUIET_PREFIXES = ("sys-", "log-")   # sys-: operator-facing events, log-: evidence kept out of the feed
 SEVERITY = {"allow": 0, "allow_monitor": 1, "require_approval": 2, "block": 3}
 POLICY_TO_DECISION = {"allow": "allow", "monitor": "allow_monitor", "require_approval": "require_approval",
                       "deny": "block"}
@@ -55,7 +58,10 @@ def _iso_now() -> str:
 
 class GatewayService:
     def __init__(self, policy_path: Path | str | None = None, db_path: str = ":memory:",
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time, mode: str = "enforce") -> None:
+        if mode not in MODES:
+            raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
+        self.mode = mode
         self.clock = clock
         self.policy = load_policy(policy_path or DEFAULT_POLICY)
         self.engine = PolicyEngine(self.policy.raw)
@@ -78,6 +84,7 @@ class GatewayService:
         self._pending: dict[str, tuple[str, float]] = {
             rid: (rec["agent_id"], _epoch(rec["timestamp"]))
             for rid, rec in latest.items() if status_of(rec) == "pending_approval"}
+        self._start()
 
     @property
     def max_pending_per_agent(self) -> int:
@@ -90,6 +97,77 @@ class GatewayService:
     @property
     def taint_window_s(self) -> float:
         return self.policy.raw.get("provenance", {}).get("session_taint_window_s", DEFAULT_TAINT_WINDOW_S)
+
+    # ------------------------------------------------------------------ audit-backed state
+    def _log_event(self, actor: str, action: str, params: dict, reason: str, *, prefix: str = "log") -> dict:
+        return self._append({
+            "schema_version": "0.1", "request_id": f"{prefix}-{uuid.uuid4().hex[:12]}", "agent_id": actor[:64],
+            "requested_action": {"action": action, "parameters": params},
+            "action_hash": action_hash({"agent_id": actor, "action": action,
+                                        "target": {"resource": "system", "id": "log"}, "parameters": params}),
+            "policies_evaluated": [{"rule_id": "builtin:record", "result": "matched", "effect": "allow"}],
+            "decision": "allow", "decision_reason": reason[:300], "policy_version": self.policy.version,
+            "containment_active": self.containment})
+
+    def _start(self) -> None:
+        """Startup: verify the log, rebuild every in-memory control from it, and record the start.
+
+        The audit log is the source of truth, so a restart can never loosen anything: containment, session taint,
+        operator resets, volume counters and behavioural baselines are replayed from it. A log that no longer
+        verifies is not trusted: the service starts in containment (everything blocked) and says so.
+        """
+        check = self.audit.verify()
+        restored = self._restore()
+        if not check["ok"]:
+            self.containment = True
+        self._log_event("veto", "SERVICE_START", {"mode": self.mode, "policy_version": self.policy.version,
+                                                  "chain_ok": check["ok"], **restored},
+                        f"VETO started in {self.mode} mode")
+        if not check["ok"]:
+            self._log_event("veto", "CHAIN_BROKEN", {"broken_at": check["broken_at"], "detail": check["detail"]},
+                            "Audit chain failed verification at startup: containment engaged")
+
+    def _restore(self) -> dict:
+        limit_windows = [float(s["window"]) for s in self.policy.raw.get("limits", {}).values()]
+        horizon = self.clock() - max([self.taint_window_s, 7200.0, *limit_windows])
+        seen: set[str] = set()
+        counted: set[str] = set()
+        n_obs = 0
+        for rec in self.audit.all():
+            rid, ra = rec["request_id"], rec.get("requested_action") or {}
+            act, params = ra.get("action"), ra.get("parameters") or {}
+            if rid.startswith(QUIET_PREFIXES):
+                if act == "REGISTER_OBSERVATION":
+                    self.prov.restore(
+                        observation_id=params["observation_id"], source=params["source"], obs_type=params["obs_type"],
+                        origin=params["origin"], capped=params["capped"], agent_id=rec["agent_id"],
+                        operator_channel=params["operator_channel"], registered_at=params["registered_at"],
+                        observed_at=params["observed_at"])
+                    n_obs += 1
+                    m = re.fullmatch(r"obs-(\d+)", params["observation_id"])
+                    if m:
+                        self._obs_n = max(self._obs_n, int(m.group(1)))
+                elif act == "RESET_CONTEXT":
+                    self.prov.reset_context(params["agent_id"])
+                elif act == "SET_CONTAINMENT":
+                    self.containment = bool(params["active"])
+                elif act == "CHAIN_BROKEN":
+                    self.containment = True
+                continue
+            ts = _epoch(rec["timestamp"])
+            first = rid not in seen
+            seen.add(rid)
+            if ts < horizon:
+                continue
+            if first and rec.get("risk") and ra.get("target"):
+                self.anomaly.observe(rec["agent_id"], ra["action"], ra["target"]["id"], ts)
+            ex = rec.get("execution") or {}
+            would_run = rec.get("mode") == "shadow" and rec["decision"] in ("allow", "allow_monitor")
+            if rid not in counted and (ex.get("status") == "executed" or would_run) and ra.get("target"):
+                counted.add(rid)
+                self._history.append({"agent_id": rec["agent_id"], "action": ra["action"],
+                                      "params": ra.get("parameters") or {}, "ts": ts})
+        return {"restored_observations": n_obs, "restored_history": len(self._history)}
 
     # ------------------------------------------------------------------ observations
     def next_observation_id(self) -> str:
@@ -107,6 +185,16 @@ class GatewayService:
                                             now=self.clock())
             except ValueError as exc:
                 raise RequestError(str(exc), 409) from exc
+            try:
+                self._log_event(agent_id or "unknown", "REGISTER_OBSERVATION", {
+                    "observation_id": stored.observation_id, "source": stored.source[:120],
+                    "obs_type": stored.type[:60], "origin": stored.origin, "capped": stored.capped,
+                    "operator_channel": operator_channel, "registered_at": stored.registered_at,
+                    "observed_at": stored.timestamp, "data_sha256": sha256_hex(canonical_json(obs.get("data", {})))},
+                    f"Observation {stored.observation_id} registered as {stored.origin}")
+            except Exception:
+                self.prov.discard(stored.observation_id)       # no evidence, no registration
+                raise
         return {"observation_id": stored.observation_id, "origin": stored.origin, "capped": stored.capped,
                 "trusted": stored.origin in ("operator_input", "trusted_store")}
 
@@ -239,7 +327,8 @@ class GatewayService:
                 reason = f"Escalated by risk band {risk['band']} ({risk['score']}): {pres.reason}"
 
             policies = list(pres.evaluated)
-            if decision == "require_approval":
+            shadow = self.mode == "shadow"
+            if decision == "require_approval" and not shadow:
                 pending = sum(1 for a, _ in self._pending.values() if a == agent_id)
                 if pending >= self.max_pending_per_agent:
                     decision = "block"
@@ -249,7 +338,7 @@ class GatewayService:
 
             requested = {**canon, "justification": ctx["justification"][:500],
                          "channel": ctx["on_behalf_of"]["channel"], "principal_id": ctx["on_behalf_of"]["principal_id"]}
-            rec = self._append({
+            record = {
                 "schema_version": "0.1", "request_id": request_id, "agent_id": agent_id,
                 "requested_action": requested, "action_hash": ahash,
                 "observation_ids": [d["ref"] for d in prov["details"]],
@@ -260,8 +349,17 @@ class GatewayService:
                 "decision": decision, "decision_reason": reason, "human_decision": None,
                 "execution": None, "verification": None,
                 "policy_version": self.policy.version, "containment_active": self.containment,
-            })
+            }
+            if shadow:
+                record["mode"] = "shadow"
+                record["execution"] = {"status": "not_executed", "adapter": "shadow",
+                                       "result_summary": "shadow mode: verdict only, nothing was executed"}
+            rec = self._append(record)
             self.anomaly.observe(agent_id, verb, target["id"], now_ts)
+            if shadow:
+                if decision in ("allow", "allow_monitor"):        # the caller proceeds on its own: count it
+                    self._history.append({"agent_id": agent_id, "action": verb, "params": params, "ts": now_ts})
+                return self._response(rec)
             if decision == "require_approval":
                 self._pending[request_id] = (agent_id, now_ts)
             if decision in ("allow", "allow_monitor"):
@@ -295,6 +393,8 @@ class GatewayService:
             rec = self.audit.latest_for_request(request_id)
             if rec is None:
                 raise RequestError("unknown request", 404)
+            if rec.get("mode") == "shadow":
+                raise RequestError("shadow-mode verdicts are advisory and cannot be approved or executed", 409)
             if rec["decision"] != "require_approval" or rec.get("human_decision"):
                 raise RequestError("request is not awaiting approval", 409)
             if approver_id == rec["agent_id"]:
@@ -346,22 +446,17 @@ class GatewayService:
 
     # ------------------------------------------------------------------ session taint control (T14)
     def reset_agent_context(self, agent_id: str, by: str, *, audited: bool = True) -> dict:
-        """Operator clears an agent's session taint (start of a new, clean task). Audited unless the demo harness."""
+        """Operator clears an agent's session taint (start of a new, clean task).
+
+        Never silent: an operator's reset is an operator-facing event (sys-); the demo harness's resets are recorded
+        quietly (log-) so a restart replays them. The record is written BEFORE the taint is cleared (invariant 6).
+        """
         if agent_id not in self.policy.raw.get("agents", {}) and audited:
             raise RequestError("unknown agent", 404)
         with self._lock:
+            self._log_event(by, "RESET_CONTEXT", {"agent_id": agent_id},
+                            f"Session taint cleared for {agent_id} by {by}", prefix="sys" if audited else "log")
             self.prov.reset_context(agent_id)
-            if audited:
-                self._append({
-                    "schema_version": "0.1", "request_id": f"sys-{uuid.uuid4().hex[:12]}", "agent_id": by[:64],
-                    "requested_action": {"action": "RESET_CONTEXT", "parameters": {"agent_id": agent_id}},
-                    "action_hash": action_hash({"agent_id": by, "action": "RESET_CONTEXT",
-                                                "target": {"resource": "agent", "id": agent_id}, "parameters": {}}),
-                    "policies_evaluated": [{"rule_id": "builtin:context-reset", "result": "matched",
-                                            "effect": "allow"}],
-                    "decision": "allow", "decision_reason": f"Session taint cleared for {agent_id} by {by}",
-                    "policy_version": self.policy.version, "containment_active": self.containment,
-                })
             return {"agent_id": agent_id, "tainted_by": []}
 
     def agents_view(self) -> list[dict]:
@@ -420,20 +515,21 @@ class GatewayService:
 
     def stats(self) -> dict:
         rows = self.requests_view(10_000)
-        agent_rows = [r for r in rows if not r["request_id"].startswith("sys-")]
+        agent_rows = [r for r in rows if not r["request_id"].startswith(QUIET_PREFIXES)]
         by_status: dict[str, int] = {}
         for r in agent_rows:
             by_status[r["status"]] = by_status.get(r["status"], 0) + 1
         unsafe = [r for r in agent_rows if r.get("tags") and r["tags"].get("unsafe")]
-        intercepted = [r for r in unsafe if r["status"] not in ("executed", "executed_unverified")]
+        intercepted = [r for r in unsafe if r["status"] not in ("executed", "executed_unverified", "shadow_allow")]
         return {"total": len(agent_rows), "by_status": by_status,
                 "pending_approvals": by_status.get("pending_approval", 0),
                 "unsafe_attempted": len(unsafe), "unsafe_intercepted": len(intercepted),
                 "uir": (len(intercepted) / len(unsafe)) if unsafe else None,
-                "direct_access_denied": self.view.denied_direct_attempts}
+                "direct_access_denied": self.view.denied_direct_attempts, "mode": self.mode}
 
     def state(self) -> dict:
-        return {"containment": self.containment, "doors": self.view.doors(), "personnel": self.view.personnel(),
+        return {"mode": self.mode, "containment": self.containment, "doors": self.view.doors(),
+                "personnel": self.view.personnel(),
                 "incident_total": self.view.incident_total(), "stats": self.stats(), "chain": self.audit.verify(),
                 "agents": self.agents_view(), "taint_window_s": self.taint_window_s,
                 "policy": {"id": self.policy.policy_id, "version": self.policy.version,
@@ -445,7 +541,13 @@ def _strip_chain(rec: dict) -> dict:
     return {k: v for k, v in rec.items() if k not in ("seq", "event_id", "timestamp", "prev_hash", "record_hash")}
 
 
+SHADOW_STATUS = {"allow": "shadow_allow", "allow_monitor": "shadow_allow", "require_approval": "shadow_approval",
+                 "block": "shadow_block"}
+
+
 def status_of(rec: dict) -> str:
+    if rec.get("mode") == "shadow":
+        return SHADOW_STATUS[rec["decision"]]
     hd, ex, ver = rec.get("human_decision"), rec.get("execution"), rec.get("verification")
     if rec["decision"] == "block":
         return "blocked"

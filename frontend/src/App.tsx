@@ -81,6 +81,11 @@ function Dashboard({ me, signOut }: { me: Me; signOut: () => void }) {
 
   return (
     <div className="min-h-full">
+      {state?.mode === "shadow" && (
+        <div className="flex items-center justify-center gap-2 bg-warn px-4 py-1.5 text-[12.5px] font-semibold text-black">
+          SHADOW MODE — VETO is recording verdicts only. Nothing is enforced, held or executed.
+        </div>
+      )}
       {state?.containment && (
         <div className="pulse-bad flex items-center justify-center gap-2 bg-bad px-4 py-1.5 text-[12.5px] font-semibold text-white">
           CONTAINMENT ENGAGED — all agent actions are blocked

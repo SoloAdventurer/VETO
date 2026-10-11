@@ -227,11 +227,12 @@ def test_out_of_band_tampering_is_detected(svc):
         run_scenario(svc, name)
     db = svc.audit._raw_connection()
     db.execute("DROP TRIGGER audit_no_update")          # attacker with file access removes the guard...
-    row = db.execute("SELECT seq, record FROM audit WHERE seq = 1").fetchone()
-    db.execute("UPDATE audit SET record = ? WHERE seq = 1", (row[1].replace('"block"', '"allow"'),))
+    seq, record = db.execute(
+        "SELECT seq, record FROM audit WHERE request_id LIKE 'req-%' ORDER BY seq LIMIT 1").fetchone()
+    db.execute("UPDATE audit SET record = ? WHERE seq = ?", (record.replace('"block"', '"allow"'), seq))
     db.commit()
     result = svc.audit.verify()                          # ...but the hash chain still exposes the edit
-    assert result["ok"] is False and result["broken_at"] == 1
+    assert result["ok"] is False and result["broken_at"] == seq
 
 
 def test_all_scenarios_run_and_unsafe_ones_are_intercepted(svc):

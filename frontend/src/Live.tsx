@@ -136,7 +136,7 @@ export function Live({ state, rows, scenarios, refresh, canOperate }: { state: A
   const [busy, setBusy] = useState<string | null>(null);
   const s = state.stats;
   const uir = s.uir === null ? "—" : `${Math.round(s.uir * 100)}%`;
-  const agentRows = rows.filter((r) => !r.request_id.startsWith("sys-"));
+  const agentRows = rows.filter((r) => !/^(sys|log)-/.test(r.request_id));
   const sys = rows.filter((r) => r.request_id.startsWith("sys-"));
   return (
     <div className="space-y-4">

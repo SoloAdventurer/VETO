@@ -49,7 +49,8 @@ def create_app(service: GatewayService | None = None, demo: bool | None = None,
                human_rate: tuple[float, int] | None = None, auth_max_failures: int | None = None,
                auth_lockout_s: float | None = None) -> FastAPI:
     holder = _Holder()
-    holder.service = service or GatewayService(db_path=os.environ.get("VETO_DB", ":memory:"))
+    holder.service = service or GatewayService(db_path=os.environ.get("VETO_DB", ":memory:"),
+                                              mode=os.environ.get("VETO_MODE", "enforce"))
     demo_enabled = demo if demo is not None else os.environ.get("VETO_DEMO", "1") == "1"
     principals = store or PrincipalStore(os.environ.get("VETO_AUTH_DB", ":memory:"))
     key = bootstrap_key or os.environ.get("VETO_BOOTSTRAP_KEY")
@@ -253,7 +254,7 @@ def create_app(service: GatewayService | None = None, demo: bool | None = None,
         @app.post("/v1/demo/reset")
         def post_reset(request: Request):
             who(request, "operator")
-            holder.service = GatewayService()
+            holder.service = GatewayService(mode=holder.service.mode)
             return {"ok": True}
 
     if UI_DIR.is_dir():

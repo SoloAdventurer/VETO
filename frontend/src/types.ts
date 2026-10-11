@@ -7,6 +7,9 @@ export type Status =
   | "pending_approval"
   | "rejected"
   | "expired"
+  | "shadow_allow"
+  | "shadow_block"
+  | "shadow_approval"
   | "failed"
   | "pending_execution";
 
@@ -114,6 +117,7 @@ export interface AgentView {
 export interface AppState {
   agents: AgentView[];
   taint_window_s: number;
+  mode?: "enforce" | "shadow";
   auth?: { failures: number; rate_limited?: number; lockouts?: number };
   containment: boolean;
   doors: Door[];

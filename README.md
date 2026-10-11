@@ -39,6 +39,11 @@ The "unsafe attempts intercepted" counter is a demo tally of scripted scenarios,
 ## Identity and keys
 Every endpoint except `/healthz` needs `Authorization: Bearer veto_...`. Identity comes from the key, never from the request body: an agent key can only submit actions as that agent (a mismatch is blocked with 403 and audited), and approvals are recorded under the approver's own principal. Roles: `agent` (exclusive), `operator`, `approver`, `viewer`, `admin`. Keys are random, stored only as SHA-256 hashes, shown once, revocable at once. Manage them with `scripts/veto_admin.py`; each admin change is written to the audit chain. An agent is limited to `approvals.max_pending_per_agent` open approvals so it cannot flood the queue, and an approval nobody decides within `approvals.expire_after_s` expires to a block. Requests are rate limited per key (`VETO_AGENT_RATE`, `VETO_HUMAN_RATE`, as `requests_per_minute[,burst]`), and a client address is locked out after repeated bad keys (`VETO_AUTH_MAX_FAILURES`, `VETO_AUTH_LOCKOUT_S`); throttled requests never reach the pipeline.
 
+## Shadow mode and restarts
+`VETO_MODE=shadow` runs the full pipeline but VETO never executes, holds or enforces anything: every request is decided and recorded as a verdict ("would allow", "would block", "would hold"), and the caller proceeds on its own. Use it to see what a policy would do on real traffic before turning enforcement on. Enforcement is the default, an unknown mode value stops the service from starting, shadow verdicts can never be approved into execution, and the dashboard shows a banner whenever shadow mode is on.
+
+A restart never loosens anything. Containment, session taint, operator resets, volume counters and behavioural baselines are rebuilt from the audit log on start. If the log no longer verifies, the service starts in containment and records why.
+
 ## Pipeline
 Agent → Gateway → [schema + catalog validation → provenance → deterministic policy → risk → anomaly] → decision (allow | allow+monitor | human approval | block) → **audit (before execution)** → Execution Gateway (decision-token + action-hash recheck) → resource → verification → audit.
 

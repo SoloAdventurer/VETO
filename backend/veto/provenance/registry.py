@@ -78,6 +78,19 @@ class ProvenanceRegistry:
         self._obs[stored.observation_id] = stored
         return stored
 
+    def restore(self, *, observation_id: str, source: str, obs_type: str, origin: str, capped: bool,
+                agent_id: str | None, operator_channel: bool, registered_at: float, observed_at: str) -> None:
+        """Rebuild one observation from its audit record after a restart (content is not kept, only provenance)."""
+        self._seq += 1
+        self._obs[observation_id] = StoredObservation(
+            observation_id=observation_id, source=source, type=obs_type, origin=origin,
+            bound_agent=agent_id if operator_channel else None, ingested_by=None if operator_channel else agent_id,
+            registered_by="operator" if operator_channel else "agent", capped=capped, data={},
+            timestamp=observed_at, seq=self._seq, registered_at=registered_at)
+
+    def discard(self, observation_id: str) -> None:
+        self._obs.pop(observation_id, None)
+
     def get(self, observation_id: str) -> StoredObservation | None:
         return self._obs.get(observation_id)
 
