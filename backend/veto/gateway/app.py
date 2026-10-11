@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import secrets
 import sys
 import time
@@ -24,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 
 from veto.auth.store import HUMAN_ROLES, AuthError, Principal, PrincipalStore
 from veto.canonical import sha256_hex
+from veto.gateway import hooks
 from veto.gateway.platform import PlatformLog, Runtimes
 from veto.gateway.ratelimit import FailureLockout, TokenBucketLimiter
 from veto.gateway.scenarios import list_scenarios, run_scenario
@@ -259,7 +261,76 @@ def create_app(service: GatewayService | None = None, demo: bool | None = None,
                                            f"Principal {pid} disabled by {p.id}; keys revoked")
         return {"disabled": pid}
 
-    # ---- policy editing (D-028): propose -> a different admin activates; every step is audited
+    # ---- webhook adapter for no-code tools (D-029): admins define hooks, an agent key calls them
+    def _tenant_agents(tenant: str) -> set[str]:
+        return {x["id"] for x in principals.list_principals(tenant=tenant)
+                if "agent" in x["roles"] and not x["disabled"]}
+
+    @app.get("/v1/admin/hooks")
+    def hook_list(request: Request):
+        p = who(request, "admin")
+        return principals.list_hooks(p.tenant)
+
+    @app.put("/v1/admin/hooks/{name}")
+    def hook_put(request: Request, name: str, payload: dict[str, Any]):
+        p = who(request, "admin")
+        if not hooks.NAME_RE.match(name):
+            raise HTTPException(422, "hook names are 2-40 characters of a-z, 0-9, _ and -")
+        try:
+            spec = hooks.validate_spec(payload, _tenant_agents(p.tenant))
+        except hooks.HookError as exc:
+            raise HTTPException(exc.status, f"invalid hook: {exc}") from exc
+        principals.put_hook(p.tenant, name, json.dumps(spec), p.id)
+        svc(request).record_system_event(
+            p.id, "HOOK_SET", {"name": name, "agent_id": spec["agent_id"], "hook_action": spec["action"],
+                               "source": spec["source"], "spec_sha256": sha256_hex(json.dumps(spec, sort_keys=True))},
+            f"Webhook {name} defined by {p.id}")
+        return {"name": name, "spec": spec}
+
+    @app.delete("/v1/admin/hooks/{name}")
+    def hook_delete(request: Request, name: str):
+        p = who(request, "admin")
+        if not principals.delete_hook(p.tenant, name):
+            raise HTTPException(404, "unknown hook")
+        svc(request).record_system_event(p.id, "HOOK_DELETED", {"name": name}, f"Webhook {name} deleted by {p.id}")
+        return {"deleted": name}
+
+    @app.post("/v1/hooks/{name}")
+    def hook_call(request: Request, name: str, payload: dict[str, Any]):
+        p = who(request, "agent")
+        if int(request.headers.get("content-length") or 0) > hooks.MAX_PAYLOAD_BYTES * 2 or len(
+                json.dumps(payload)) > hooks.MAX_PAYLOAD_BYTES:
+            raise HTTPException(413, f"payload larger than {hooks.MAX_PAYLOAD_BYTES} bytes")
+        row = principals.get_hook(p.tenant, name)
+        if row is None or row["spec"]["agent_id"] != p.id:          # another agent's hook looks like no hook
+            raise HTTPException(404, "unknown hook")
+        s = svc(request)
+        idem = request.headers.get("idempotency-key")
+        owned = False
+        if idem is not None:
+            if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", idem):
+                raise HTTPException(422, "Idempotency-Key must be 1-128 characters of A-Z a-z 0-9 _ . : -")
+            owned, prior = principals.claim_call(p.tenant, name, idem)
+            if not owned:
+                rec = s.audit.latest_for_request(prior) if prior else None
+                if rec is None:
+                    raise HTTPException(409, "a call with this Idempotency-Key is still being processed; retry")
+                return {**hooks.flat_response(name, s._response(rec)), "replayed": True}
+        request_id = None
+        try:
+            try:
+                obs, action = hooks.build(name, row["spec"], payload, s.next_observation_id())
+            except hooks.HookError as exc:
+                raise HTTPException(exc.status, str(exc)) from exc
+            guard(lambda: s.register_observation(obs, agent_id=p.id, operator_channel=False))
+            resp = guard(lambda: s.propose_action(action, authenticated_as=p.id))
+            request_id = resp["request_id"]
+        finally:
+            if owned:
+                principals.finish_call(p.tenant, name, idem, request_id)     # None releases the key for a retry
+        return hooks.flat_response(name, resp)
+
+    # ---- policy editing (D-028)
     def _version_or_404(tenant: str, version: int) -> dict:
         row = principals.get_policy_version(tenant, version, with_text=True)
         if row is None:

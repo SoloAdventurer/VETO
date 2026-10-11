@@ -55,7 +55,7 @@ def activate(w, tenant, version, who="admin-2"):
     return w.c.post(f"/v1/policy/proposals/{version}/activate", headers=w.h(tenant, who))
 
 
-# ---------------------------------------------------------------------------------------------- the workflow
+# ---  the workflow
 @pytest.mark.parametrize("target", BACKENDS, indirect=True)
 def test_a_proposal_changes_nothing_until_a_different_admin_activates_it(world):
     before = world.act("alpha", read()).json()
@@ -109,7 +109,7 @@ def test_a_second_activation_supersedes_the_first(world):
     assert hist == {v1: "superseded", v2: "active"}
 
 
-# ---------------------------------------------------------------------------------------------- the lint is a gate
+# ---  the lint is a gate
 def _no_kill_switch(raw):
     raw["rules"] = [r for r in raw["rules"] if r["id"] != "deny-containment"]
 
@@ -162,7 +162,7 @@ def test_lint_accepts_the_shipped_policy_and_reports_why_it_rejects():
     assert any("untrusted" in e for e in lint_policy(raw))
 
 
-# ---------------------------------------------------------------------------------------------- roles and tenants
+# ---  roles and tenants
 @pytest.mark.parametrize("target", BACKENDS, indirect=True)
 def test_only_admins_edit_and_agents_cannot_even_read_the_policy(world):
     for who in ("ops-agent-1", "human-op", "human-ap", "human-view"):
@@ -186,7 +186,7 @@ def test_tenants_cannot_see_or_activate_each_others_proposals(world):
     assert world.c.get("/v1/policy", headers=bearer(PLATFORM)).status_code == 403     # the platform has no tenant
 
 
-# ---------------------------------------------------------------------------------------------- processes and restarts
+# ---  processes and restarts
 @pytest.mark.parametrize("target", BACKENDS, indirect=True)
 def test_another_process_picks_the_activation_up_from_the_chain(world, monkeypatch):
     other = TestClient(create_app(demo=True, bootstrap_key=LOCAL_ADMIN, platform_key=PLATFORM))
@@ -222,7 +222,7 @@ def test_a_tampered_activation_in_the_chain_forces_containment(world):
     assert other.post("/v1/actions", json=read(), headers=world.h("beta", "ops-agent-1")).json()["decision"] != "block"
 
 
-# ---------------------------------------------------------------------------------------------- diff
+# ---  diff
 def test_diff_reports_added_removed_changed_and_whether_it_loosens():
     old = base()
     assert diff_policies(old, copy.deepcopy(old))["loosens"] is False

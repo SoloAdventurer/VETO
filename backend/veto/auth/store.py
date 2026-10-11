@@ -53,6 +53,14 @@ CREATE TABLE IF NOT EXISTS policy_versions (
   created_at DOUBLE PRECISION NOT NULL, status TEXT NOT NULL, decided_by TEXT, decided_at DOUBLE PRECISION,
   diff TEXT NOT NULL, PRIMARY KEY (tenant, version)
 );
+CREATE TABLE IF NOT EXISTS webhooks (
+  tenant TEXT NOT NULL, name TEXT NOT NULL, spec TEXT NOT NULL, created_by TEXT NOT NULL,
+  created_at DOUBLE PRECISION NOT NULL, PRIMARY KEY (tenant, name)
+);
+CREATE TABLE IF NOT EXISTS hook_calls (
+  tenant TEXT NOT NULL, hook TEXT NOT NULL, idem_key TEXT NOT NULL, request_id TEXT,
+  created_at DOUBLE PRECISION NOT NULL, PRIMARY KEY (tenant, hook, idem_key)
+);
 CREATE TABLE IF NOT EXISTS platform_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
@@ -212,6 +220,60 @@ class PrincipalStore:
                 except self._db.integrity_error:
                     continue
         raise AuthError("could not allocate a policy version; retry", 409)
+
+    # ---------------------------------------------------------------- webhooks (always inside one tenant)
+    def put_hook(self, tenant: str, name: str, spec_json: str, by: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO webhooks (tenant, name, spec, created_by, created_at) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (tenant, name) DO UPDATE SET spec = excluded.spec, created_by = excluded.created_by, "
+                "created_at = excluded.created_at", (tenant, name, spec_json, by, self._clock()))
+            self._db.commit()
+
+    def get_hook(self, tenant: str, name: str) -> dict | None:
+        import json
+        with self._lock:
+            row = self._db.execute("SELECT spec, created_by, created_at FROM webhooks WHERE tenant = ? AND name = ?",
+                                   (tenant, name)).fetchone()
+        return {"name": name, "spec": json.loads(row[0]), "created_by": row[1], "created_at": row[2]} if row else None
+
+    def list_hooks(self, tenant: str) -> list[dict]:
+        import json
+        with self._lock:
+            rows = self._db.execute("SELECT name, spec, created_by, created_at FROM webhooks WHERE tenant = ? "
+                                    "ORDER BY name", (tenant,)).fetchall()
+        return [{"name": r[0], "spec": json.loads(r[1]), "created_by": r[2], "created_at": r[3]} for r in rows]
+
+    def delete_hook(self, tenant: str, name: str) -> bool:
+        with self._lock:
+            cur = self._db.execute("DELETE FROM webhooks WHERE tenant = ? AND name = ?", (tenant, name))
+            self._db.commit()
+            return cur.rowcount > 0
+
+    def claim_call(self, tenant: str, hook: str, key: str) -> tuple[bool, str | None]:
+        """Idempotency: True if this caller owns (tenant, hook, key); otherwise False and the request id the first
+        call produced (None while that call is still being decided)."""
+        with self._lock:
+            try:
+                self._db.execute("INSERT INTO hook_calls (tenant, hook, idem_key, created_at) VALUES (?, ?, ?, ?)",
+                                 (tenant, hook, key, self._clock()))
+                self._db.commit()
+                return True, None
+            except self._db.integrity_error:
+                row = self._db.execute("SELECT request_id FROM hook_calls WHERE tenant = ? AND hook = ? "
+                                       "AND idem_key = ?", (tenant, hook, key)).fetchone()
+                return False, row[0] if row else None
+
+    def finish_call(self, tenant: str, hook: str, key: str, request_id: str | None) -> None:
+        """Record the outcome of an owned call; None releases the key so the caller can retry."""
+        with self._lock:
+            if request_id is None:
+                self._db.execute("DELETE FROM hook_calls WHERE tenant = ? AND hook = ? AND idem_key = ?",
+                                 (tenant, hook, key))
+            else:
+                self._db.execute("UPDATE hook_calls SET request_id = ? WHERE tenant = ? AND hook = ? "
+                                 "AND idem_key = ?", (request_id, tenant, hook, key))
+            self._db.commit()
 
     _POLICY_COLS = "version, sha, created_by, created_at, status, decided_by, decided_at, diff"
 

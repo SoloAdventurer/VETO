@@ -55,6 +55,9 @@ One deployment can serve many customers. Each tenant has its own policy, agents,
 ## Editing policy
 A tenant admin proposes a new policy (`POST /v1/policy/proposals`), sees a diff that flags anything that loosens it, and a *different* admin activates it. A lint refuses any policy that removes the kill-switch rule, defaults to allow, or lets untrusted origins grant authority. The activation, with the full policy text and its hash, goes into the audit chain, so every decision can be tied to the exact policy that made it. See `docs/policy-format.md` and DECISIONS D-028.
 
+## Zapier, Make and n8n
+An admin defines a *hook* that maps a payload to one action; the automation calls `POST /v1/hooks/{name}` with its agent key and branches on `executed`, `blocked` or `pending_approval` in the reply. Whatever the automation relays is treated as untrusted content, so a hook cannot be used to launder authority: the policy decides exactly as it does for any other agent. Inbound only for now. See `docs/webhooks.md` and DECISIONS D-029.
+
 ## PostgreSQL
 
 `VETO_DB=postgresql://...` stores the audit log in PostgreSQL instead of SQLite (shared by several gateway processes, append-only enforced by the database). See docs/postgres.md for setup, privileges and limits.
