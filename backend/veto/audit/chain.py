@@ -1,7 +1,8 @@
 """Append-only, hash-chained audit log (invariant 6).
 
 SQLite is the default backend (D-016); veto.audit.postgres adds PostgreSQL (D-025).
-Triggers make UPDATE/DELETE fail at the database level, and every record carries prev_hash/record_hash so tampering with the file itself is detectable by verify().
+Triggers make UPDATE/DELETE fail at the database level, and every record carries prev_hash/record_hash so
+tampering with the file itself is detectable by verify().
 Records are validated against schemas/decision.schema.json before insert.
 """
 
