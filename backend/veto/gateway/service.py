@@ -22,7 +22,7 @@ from jsonschema import Draft202012Validator
 from veto import catalog
 from veto.adapters.mock_security_ops import AccessDenied, MockSecurityOps
 from veto.anomaly.detector import AnomalyDetector
-from veto.audit.chain import AuditLog
+from veto.audit import open_audit
 from veto.canonical import action_hash, canonical_action, canonical_json, sha256_hex
 from veto.execution.gateway import DecisionSigner, ExecutionGateway
 from veto.paths import DEFAULT_POLICY, SCHEMAS_DIR
@@ -65,7 +65,7 @@ class GatewayService:
         self.clock = clock
         self.policy = load_policy(policy_path or DEFAULT_POLICY)
         self.engine = PolicyEngine(self.policy.raw)
-        self.audit = AuditLog(db_path)
+        self.audit = open_audit(db_path)
         self.prov = ProvenanceRegistry()
         self.anomaly = AnomalyDetector(working_hours=self.policy.raw.get("anomaly", {}).get("working_hours"))
         self.containment = False

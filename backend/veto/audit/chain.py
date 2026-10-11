@@ -1,7 +1,7 @@
 """Append-only, hash-chained audit log (invariant 6).
 
-SQLite for the MVP (DECISIONS D-016); PostgreSQL later. Triggers make UPDATE/DELETE fail at the database level,
-and every record carries prev_hash/record_hash so tampering with the file itself is detectable by verify().
+SQLite is the default backend (D-016); veto.audit.postgres adds PostgreSQL (D-025).
+Triggers make UPDATE/DELETE fail at the database level, and every record carries prev_hash/record_hash so tampering with the file itself is detectable by verify().
 Records are validated against schemas/decision.schema.json before insert.
 """
 
@@ -41,7 +41,39 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def seal(record: dict, prev_hash: str) -> dict:
+    """Add the chain fields (id, time, prev_hash, record_hash) and validate against the decision schema.
+
+    Shared by every storage backend, so the chain is computed identically wherever it is stored."""
+    rec = dict(record)
+    rec["event_id"] = f"evt-{uuid.uuid4().hex[:16]}"
+    rec["timestamp"] = _now()
+    rec["prev_hash"] = prev_hash
+    rec["record_hash"] = sha256_hex(canonical_json({k: v for k, v in rec.items() if k != "record_hash"}))
+    errors = sorted(_VALIDATOR.iter_errors(rec), key=lambda e: list(e.path))
+    if errors:
+        raise ValueError("audit record violates decision schema: " + "; ".join(e.message for e in errors[:3]))
+    return rec
+
+
+def verify_chain(records: list[dict]) -> dict:
+    """Recompute the whole chain over records (each carrying its `seq`)."""
+    prev = GENESIS
+    count = 0
+    for rec in records:
+        count += 1
+        body = {k: v for k, v in rec.items() if k not in ("record_hash", "seq")}
+        if rec["prev_hash"] != prev:
+            return {"ok": False, "count": count, "broken_at": rec["seq"], "detail": "prev_hash mismatch"}
+        if sha256_hex(canonical_json(body)) != rec["record_hash"]:
+            return {"ok": False, "count": count, "broken_at": rec["seq"], "detail": "record_hash mismatch"}
+        prev = rec["record_hash"]
+    return {"ok": True, "count": count, "broken_at": None, "detail": "chain intact"}
+
+
 class AuditLog:
+    """SQLite backend (default; single process)."""
+
     def __init__(self, path: str = ":memory:") -> None:
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.executescript(_DDL)
@@ -54,14 +86,7 @@ class AuditLog:
     def append(self, record: dict) -> dict:
         """Add chain fields, validate against the schema, insert. Returns the stored record (with seq)."""
         with self._lock:
-            rec = dict(record)
-            rec["event_id"] = f"evt-{uuid.uuid4().hex[:16]}"
-            rec["timestamp"] = _now()
-            rec["prev_hash"] = self._last_hash()
-            rec["record_hash"] = sha256_hex(canonical_json({k: v for k, v in rec.items() if k != "record_hash"}))
-            errors = sorted(_VALIDATOR.iter_errors(rec), key=lambda e: list(e.path))
-            if errors:
-                raise ValueError("audit record violates decision schema: " + "; ".join(e.message for e in errors[:3]))
+            rec = seal(record, self._last_hash())
             cur = self._db.execute(
                 "INSERT INTO audit (event_id, request_id, record, record_hash) VALUES (?, ?, ?, ?)",
                 (rec["event_id"], rec["request_id"], canonical_json(rec), rec["record_hash"]),
@@ -83,17 +108,7 @@ class AuditLog:
 
     def verify(self) -> dict:
         """Recompute the whole chain. Returns {ok, count, broken_at (seq|None), detail}."""
-        prev = GENESIS
-        count = 0
-        for rec in self.all():
-            count += 1
-            body = {k: v for k, v in rec.items() if k not in ("record_hash", "seq")}
-            if rec["prev_hash"] != prev:
-                return {"ok": False, "count": count, "broken_at": rec["seq"], "detail": "prev_hash mismatch"}
-            if sha256_hex(canonical_json(body)) != rec["record_hash"]:
-                return {"ok": False, "count": count, "broken_at": rec["seq"], "detail": "record_hash mismatch"}
-            prev = rec["record_hash"]
-        return {"ok": True, "count": count, "broken_at": None, "detail": "chain intact"}
+        return verify_chain(self.all())
 
     def _raw_connection(self) -> sqlite3.Connection:
         """Test hook: lets tests simulate someone editing the database file out-of-band."""

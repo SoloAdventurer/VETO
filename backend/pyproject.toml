@@ -7,4 +7,5 @@ dependencies = ["fastapi", "uvicorn", "jsonschema", "pyyaml"]
 
 [project.optional-dependencies]
 dev = ["pytest", "httpx", "ruff"]
-# Tier 2 (not used yet): scikit-learn for the Isolation Forest / n-gram anomaly models; PostgreSQL driver for the audit store.
+postgres = ["psycopg[binary]>=3.1"]   # audit log on PostgreSQL (VETO_DB=postgresql://...), DECISIONS D-025
+# Tier 2 (not used yet): scikit-learn for the Isolation Forest / n-gram anomaly models.

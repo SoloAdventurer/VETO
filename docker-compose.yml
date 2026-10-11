@@ -9,6 +9,7 @@ services:
     environment:
       VETO_DEMO: "1"
       VETO_DB: "/data/audit.db"   # audit log persists across restarts; use ":memory:" for a throwaway demo
+      # VETO_DB: "postgresql://veto_app:CHANGE_ME@postgres:5432/veto"   # audit on PostgreSQL, see docs/postgres.md
       VETO_AUTH_DB: "/data/auth.db"
       # VETO_MODE: "shadow"   # verdicts only, nothing enforced or executed (default: enforce)
       # DEMO-ONLY admin key so the dashboard can be signed in to. Override it (VETO_BOOTSTRAP_KEY=veto_...) for anything

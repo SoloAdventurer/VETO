@@ -48,6 +48,10 @@ A restart never loosens anything. Containment, session taint, operator resets, v
 
 `python3 scripts/run_eval.py` runs ~940 labelled attack and legitimate cases through the real gateway under five configurations and writes `experiments/results/report.md` (UIR with confidence intervals, ablations, false blocks, latency). See DECISIONS D-024 for what the numbers do and do not show.
 
+## PostgreSQL
+
+`VETO_DB=postgresql://...` stores the audit log in PostgreSQL instead of SQLite (shared by several gateway processes, append-only enforced by the database). See docs/postgres.md for setup, privileges and limits.
+
 ## Pipeline
 Agent → Gateway → [schema + catalog validation → provenance → deterministic policy → risk → anomaly] → decision (allow | allow+monitor | human approval | block) → **audit (before execution)** → Execution Gateway (decision-token + action-hash recheck) → resource → verification → audit.
 
