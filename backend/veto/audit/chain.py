@@ -8,6 +8,7 @@ Records are validated against schemas/decision.schema.json before insert.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
@@ -99,6 +100,16 @@ class AuditLog:
         with self._lock:
             rows = self._db.execute("SELECT seq, record FROM audit ORDER BY seq").fetchall()
         return [{**json.loads(r), "seq": s} for s, r in rows]
+
+    def since(self, seq: int) -> list[dict]:
+        """Records appended after `seq` (by this or any other process), oldest first."""
+        with self._lock:
+            rows = self._db.execute("SELECT seq, record FROM audit WHERE seq > ? ORDER BY seq", (seq,)).fetchall()
+        return [{**json.loads(r), "seq": s} for s, r in rows]
+
+    def exclusive(self):
+        """Cross-process critical section around one decision. SQLite is single-process, so nothing to do."""
+        return contextlib.nullcontext()
 
     def latest_for_request(self, request_id: str) -> dict | None:
         with self._lock:

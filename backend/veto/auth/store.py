@@ -4,6 +4,8 @@
   so an agent key can never approve, contain, read the audit trail or administer anything.
 * Keys are random 256-bit secrets shown once at creation. Only their SHA-256 hash is stored, so a leaked database
   does not leak usable keys. Keys can be revoked or rotated at any time and take effect on the next request.
+* The store lives in SQLite (a path or ':memory:') or PostgreSQL (a postgresql:// URL) so several gateway processes
+  can share principals and keys; a revocation is seen by every process on its next request (D-026).
 * Identity always comes from the key. Whatever a request body claims about who is acting is checked against it.
 """
 
@@ -26,11 +28,12 @@ KEY_PREFIX = "veto_"
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS principals (
-  id TEXT PRIMARY KEY, roles TEXT NOT NULL, disabled INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL
+  id TEXT PRIMARY KEY, roles TEXT NOT NULL, disabled INTEGER NOT NULL DEFAULT 0, created_at DOUBLE PRECISION NOT NULL
 );
 CREATE TABLE IF NOT EXISTS api_keys (
   key_id TEXT PRIMARY KEY, principal_id TEXT NOT NULL REFERENCES principals(id), key_hash TEXT UNIQUE NOT NULL,
-  prefix TEXT NOT NULL, created_at REAL NOT NULL, last_used REAL, revoked_at REAL
+  prefix TEXT NOT NULL, created_at DOUBLE PRECISION NOT NULL, last_used DOUBLE PRECISION,
+  revoked_at DOUBLE PRECISION
 );
 """
 
@@ -51,14 +54,47 @@ class Principal:
         return any(r in self.roles for r in roles)
 
 
+class _Sql:
+    """The few calls the store needs, over SQLite or PostgreSQL (placeholders written as ? for both)."""
+
+    def __init__(self, target: str) -> None:
+        self.pg = target.startswith(("postgresql://", "postgres://"))
+        if self.pg:
+            import psycopg
+            self._c = psycopg.connect(target, autocommit=True)
+            self.integrity_error: type[Exception] = psycopg.errors.UniqueViolation
+        else:
+            self._c = sqlite3.connect(target, check_same_thread=False)
+            self.integrity_error = sqlite3.IntegrityError
+        for stmt in (x.strip() for x in _DDL.split(";")):
+            if stmt:
+                self._c.execute(stmt)
+        self.commit()
+
+    def execute(self, sql: str, params: tuple = ()):
+        return self._c.execute(sql.replace("?", "%s") if self.pg else sql, params)
+
+    def commit(self) -> None:
+        if not self.pg:
+            self._c.commit()
+
+    def iterdump(self):
+        """Everything stored, as text lines (test hook: proves no plaintext key is ever written)."""
+        if not self.pg:
+            yield from self._c.iterdump()
+            return
+        for label, query in (("principals", "SELECT * FROM principals"), ("api_keys", "SELECT * FROM api_keys")):
+            for row in self.execute(query).fetchall():
+                yield f"{label}: {row!r}"
+
+
 def _hash(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 class PrincipalStore:
     def __init__(self, path: str = ":memory:", clock: Callable[[], float] = time.time) -> None:
-        self._db = sqlite3.connect(path, check_same_thread=False)
-        self._db.executescript(_DDL)
+        self._db = _Sql(path)
         self._lock = threading.Lock()
         self._clock = clock
         self.failures = 0
@@ -75,8 +111,11 @@ class PrincipalStore:
         with self._lock:
             if self._db.execute("SELECT 1 FROM principals WHERE id = ?", (pid,)).fetchone():
                 raise AuthError(f"principal '{pid}' already exists", 409)
-            self._db.execute("INSERT INTO principals (id, roles, created_at) VALUES (?, ?, ?)",
-                             (pid, ",".join(sorted(roleset)), self._clock()))
+            try:
+                self._db.execute("INSERT INTO principals (id, roles, created_at) VALUES (?, ?, ?)",
+                                 (pid, ",".join(sorted(roleset)), self._clock()))
+            except self._db.integrity_error as exc:         # another gateway process created it first
+                raise AuthError(f"principal '{pid}' already exists", 409) from exc
             self._db.commit()
 
     def issue_key(self, pid: str) -> tuple[str, str]:
@@ -117,14 +156,19 @@ class PrincipalStore:
         if not plaintext_key.startswith(KEY_PREFIX) or len(plaintext_key) < 24:
             raise AuthError(f"bootstrap key must start with '{KEY_PREFIX}' and be at least 24 characters")
         with self._lock:
-            if not self._db.execute("SELECT 1 FROM principals WHERE id = ?", (pid,)).fetchone():
-                self._db.execute("INSERT INTO principals (id, roles, created_at) VALUES (?, ?, ?)",
-                                 (pid, ",".join(sorted(HUMAN_ROLES)), self._clock()))
-            if not self._db.execute("SELECT 1 FROM api_keys WHERE key_hash = ?", (_hash(plaintext_key),)).fetchone():
-                self._db.execute(
-                    "INSERT INTO api_keys (key_id, principal_id, key_hash, prefix, created_at) VALUES (?, ?, ?, ?, ?)",
-                    ("key-bootstrap-" + secrets.token_hex(3), pid, _hash(plaintext_key), plaintext_key[:11],
-                     self._clock()))
+            try:
+                if not self._db.execute("SELECT 1 FROM principals WHERE id = ?", (pid,)).fetchone():
+                    self._db.execute("INSERT INTO principals (id, roles, created_at) VALUES (?, ?, ?)",
+                                     (pid, ",".join(sorted(HUMAN_ROLES)), self._clock()))
+                if not self._db.execute("SELECT 1 FROM api_keys WHERE key_hash = ?",
+                                        (_hash(plaintext_key),)).fetchone():
+                    self._db.execute(
+                        "INSERT INTO api_keys (key_id, principal_id, key_hash, prefix, created_at) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        ("key-bootstrap-" + secrets.token_hex(3), pid, _hash(plaintext_key), plaintext_key[:11],
+                         self._clock()))
+            except self._db.integrity_error:
+                pass                                          # another process bootstrapped at the same moment
             self._db.commit()
 
     def has_principals(self) -> bool:
@@ -153,11 +197,13 @@ class PrincipalStore:
         digest = _hash(plaintext)
         with self._lock:
             row = self._db.execute(
-                "SELECT k.key_id, k.key_hash, k.revoked_at, p.id, p.roles, p.disabled FROM api_keys k "
+                "SELECT k.key_id, k.key_hash, k.revoked_at, p.id, p.roles, p.disabled, k.last_used FROM api_keys k "
                 "JOIN principals p ON p.id = k.principal_id WHERE k.key_hash = ?", (digest,)).fetchone()
             if row is None or not hmac.compare_digest(row[1], digest) or row[2] is not None or row[5]:
                 self.failures += 1
                 return None
-            self._db.execute("UPDATE api_keys SET last_used = ? WHERE key_id = ?", (self._clock(), row[0]))
-            self._db.commit()
+            now = self._clock()
+            if row[6] is None or now - row[6] >= 30:          # one write per half minute, not per request
+                self._db.execute("UPDATE api_keys SET last_used = ? WHERE key_id = ?", (now, row[0]))
+                self._db.commit()
             return Principal(id=row[3], roles=frozenset(row[4].split(",")), key_id=row[0])

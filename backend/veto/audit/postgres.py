@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 
@@ -18,6 +19,7 @@ from veto.audit.chain import GENESIS, seal, verify_chain
 from veto.canonical import canonical_json
 
 _LOCK_KEY = 7_412_001            # arbitrary constant shared by every VETO process using the same database
+_EXCL_KEY = 7_412_002            # session lock held for a whole decision (see exclusive())
 _DDL = f"""
 SELECT pg_advisory_xact_lock({_LOCK_KEY});
 CREATE TABLE IF NOT EXISTS audit (
@@ -41,6 +43,7 @@ class PostgresAuditLog:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._lock = threading.Lock()
+        self._depth = 0
         self._db = psycopg.connect(dsn)
         with self._db.transaction():
             self._db.execute(_DDL)          # type: ignore[arg-type]
@@ -68,6 +71,34 @@ class PostgresAuditLog:
             rows = self._conn().execute("SELECT seq, record FROM audit ORDER BY seq").fetchall()
             self._db.rollback()
         return [{**json.loads(r), "seq": s} for s, r in rows]
+
+    def since(self, seq: int) -> list[dict]:
+        with self._lock:
+            rows = self._conn().execute("SELECT seq, record FROM audit WHERE seq > %s ORDER BY seq", (seq,)).fetchall()
+            self._db.rollback()
+        return [{**json.loads(r), "seq": s} for s, r in rows]
+
+    @contextlib.contextmanager
+    def exclusive(self):
+        """Hold a database-wide lock for a whole decision (catch up, decide, append), so two gateway processes
+        can never decide at the same time on stale state. Re-entrant within this process; released on error."""
+        with self._lock:
+            first = self._depth == 0
+            if first:
+                self._conn().execute("SELECT pg_advisory_lock(%s)", (_EXCL_KEY,))
+                self._db.rollback()
+            self._depth += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._depth -= 1
+                if self._depth == 0:
+                    try:
+                        self._conn().execute("SELECT pg_advisory_unlock(%s)", (_EXCL_KEY,))
+                        self._db.rollback()
+                    except psycopg.Error:
+                        pass        # a dropped connection releases its session locks by itself
 
     def latest_for_request(self, request_id: str) -> dict | None:
         with self._lock:

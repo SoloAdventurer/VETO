@@ -52,7 +52,10 @@ def create_app(service: GatewayService | None = None, demo: bool | None = None,
     holder.service = service or GatewayService(db_path=os.environ.get("VETO_DB", ":memory:"),
                                               mode=os.environ.get("VETO_MODE", "enforce"))
     demo_enabled = demo if demo is not None else os.environ.get("VETO_DEMO", "1") == "1"
-    principals = store or PrincipalStore(os.environ.get("VETO_AUTH_DB", ":memory:"))
+    _db = os.environ.get("VETO_DB", ":memory:")
+    # With the audit log on PostgreSQL the keys default to the same database, so every gateway process shares them.
+    _auth_default = _db if _db.startswith(("postgresql://", "postgres://")) else ":memory:"
+    principals = store or PrincipalStore(os.environ.get("VETO_AUTH_DB", _auth_default))
     key = bootstrap_key or os.environ.get("VETO_BOOTSTRAP_KEY")
     if key:
         principals.bootstrap(key)

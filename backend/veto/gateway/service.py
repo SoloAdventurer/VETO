@@ -7,6 +7,7 @@ Hard policy decides first; risk/anomaly can only escalate (invariants 2, 3, 6).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import secrets
@@ -80,10 +81,14 @@ class GatewayService:
         self.execution = ExecutionGateway(self.resource, access_key, self.signer, lambda: self.containment)
         self.view = self.resource.trusted
         # request_id -> (agent_id, held_at) for requests awaiting a human: drives the T7 cap and approval expiry
-        latest = {rec["request_id"]: rec for rec in self.audit.all()}
-        self._pending: dict[str, tuple[str, float]] = {
-            rid: (rec["agent_id"], _epoch(rec["timestamp"]))
-            for rid, rec in latest.items() if status_of(rec) == "pending_approval"}
+        self._pending: dict[str, tuple[str, float]] = {}
+        # Shared-state sync (D-026): the audit log is the one source of truth, so several gateway processes on the
+        # same database stay consistent by replaying what the others append before every decision.
+        self._last_seq = 0
+        self._own: set[str] = set()                    # event ids this process wrote (already applied in memory)
+        self._seen_req: set[str] = set()
+        self._counted: set[str] = set()
+        self._restored_obs = 0
         self._start()
 
     @property
@@ -127,47 +132,70 @@ class GatewayService:
             self._log_event("veto", "CHAIN_BROKEN", {"broken_at": check["broken_at"], "detail": check["detail"]},
                             "Audit chain failed verification at startup: containment engaged")
 
-    def _restore(self) -> dict:
+    def _horizon(self) -> float:
         limit_windows = [float(s["window"]) for s in self.policy.raw.get("limits", {}).values()]
-        horizon = self.clock() - max([self.taint_window_s, 7200.0, *limit_windows])
-        seen: set[str] = set()
-        counted: set[str] = set()
-        n_obs = 0
+        return self.clock() - max([self.taint_window_s, 7200.0, *limit_windows])
+
+    def _apply(self, rec: dict, horizon: float) -> None:
+        """Fold one audit record into the in-memory controls. Used for replay at start and for records that other
+        gateway processes appended; records this process wrote were applied when they were made."""
+        rid, ra = rec["request_id"], rec.get("requested_action") or {}
+        act, params = ra.get("action"), ra.get("parameters") or {}
+        if rid.startswith(QUIET_PREFIXES):
+            if act == "REGISTER_OBSERVATION":
+                self.prov.restore(
+                    observation_id=params["observation_id"], source=params["source"], obs_type=params["obs_type"],
+                    origin=params["origin"], capped=params["capped"], agent_id=rec["agent_id"],
+                    operator_channel=params["operator_channel"], registered_at=params["registered_at"],
+                    observed_at=params["observed_at"])
+                self._restored_obs += 1
+                m = re.fullmatch(r"obs-(\d+)", params["observation_id"])
+                if m:
+                    self._obs_n = max(self._obs_n, int(m.group(1)))
+            elif act == "RESET_CONTEXT":
+                self.prov.reset_context(params["agent_id"])
+            elif act == "SET_CONTAINMENT":
+                self.containment = bool(params["active"])
+            elif act == "CHAIN_BROKEN":
+                self.containment = True
+            return
+        ts = _epoch(rec["timestamp"])
+        if status_of(rec) == "pending_approval":
+            self._pending[rid] = (rec["agent_id"], self._pending.get(rid, (None, ts))[1])
+        else:
+            self._pending.pop(rid, None)
+        first = rid not in self._seen_req
+        self._seen_req.add(rid)
+        if ts < horizon:
+            return
+        if first and rec.get("risk") and ra.get("target"):
+            self.anomaly.observe(rec["agent_id"], ra["action"], ra["target"]["id"], ts)
+        ex = rec.get("execution") or {}
+        would_run = rec.get("mode") == "shadow" and rec["decision"] in ("allow", "allow_monitor")
+        if rid not in self._counted and (ex.get("status") == "executed" or would_run) and ra.get("target"):
+            self._counted.add(rid)
+            self._history.append({"agent_id": rec["agent_id"], "action": ra["action"],
+                                  "params": ra.get("parameters") or {}, "ts": ts})
+
+    def _restore(self) -> dict:
+        horizon = self._horizon()
         for rec in self.audit.all():
-            rid, ra = rec["request_id"], rec.get("requested_action") or {}
-            act, params = ra.get("action"), ra.get("parameters") or {}
-            if rid.startswith(QUIET_PREFIXES):
-                if act == "REGISTER_OBSERVATION":
-                    self.prov.restore(
-                        observation_id=params["observation_id"], source=params["source"], obs_type=params["obs_type"],
-                        origin=params["origin"], capped=params["capped"], agent_id=rec["agent_id"],
-                        operator_channel=params["operator_channel"], registered_at=params["registered_at"],
-                        observed_at=params["observed_at"])
-                    n_obs += 1
-                    m = re.fullmatch(r"obs-(\d+)", params["observation_id"])
-                    if m:
-                        self._obs_n = max(self._obs_n, int(m.group(1)))
-                elif act == "RESET_CONTEXT":
-                    self.prov.reset_context(params["agent_id"])
-                elif act == "SET_CONTAINMENT":
-                    self.containment = bool(params["active"])
-                elif act == "CHAIN_BROKEN":
-                    self.containment = True
+            self._apply(rec, horizon)
+            self._last_seq = max(self._last_seq, rec["seq"])
+        return {"restored_observations": self._restored_obs, "restored_history": len(self._history)}
+
+    def _sync(self) -> int:
+        """Apply what other gateway processes appended since the last look (one indexed query)."""
+        horizon = self._horizon()
+        n = 0
+        for rec in self.audit.since(self._last_seq):
+            self._last_seq = max(self._last_seq, rec["seq"])
+            if rec["event_id"] in self._own:
+                self._own.discard(rec["event_id"])
                 continue
-            ts = _epoch(rec["timestamp"])
-            first = rid not in seen
-            seen.add(rid)
-            if ts < horizon:
-                continue
-            if first and rec.get("risk") and ra.get("target"):
-                self.anomaly.observe(rec["agent_id"], ra["action"], ra["target"]["id"], ts)
-            ex = rec.get("execution") or {}
-            would_run = rec.get("mode") == "shadow" and rec["decision"] in ("allow", "allow_monitor")
-            if rid not in counted and (ex.get("status") == "executed" or would_run) and ra.get("target"):
-                counted.add(rid)
-                self._history.append({"agent_id": rec["agent_id"], "action": ra["action"],
-                                      "params": ra.get("parameters") or {}, "ts": ts})
-        return {"restored_observations": n_obs, "restored_history": len(self._history)}
+            self._apply(rec, horizon)
+            n += 1
+        return n
 
     # ------------------------------------------------------------------ observations
     def next_observation_id(self) -> str:
@@ -179,7 +207,7 @@ class GatewayService:
         errors = [e.message for e in OBS_VALIDATOR.iter_errors(obs)]
         if errors:
             raise RequestError("invalid observation: " + "; ".join(errors[:3]))
-        with self._lock:
+        with self._txn():
             try:
                 stored = self.prov.register(obs, agent_id=agent_id, operator_channel=operator_channel,
                                             now=self.clock())
@@ -219,7 +247,17 @@ class GatewayService:
         return {}
 
     def _append(self, rec: dict) -> dict:
-        return self.audit.append(rec)
+        out = self.audit.append(rec)
+        self._own.add(out["event_id"])
+        return out
+
+    @contextlib.contextmanager
+    def _txn(self):
+        """One decision, atomic across gateway processes: take the cross-process lock, catch up with everything the
+        others appended, run, release. A failure to catch up raises, so the request fails closed."""
+        with self._lock, self.audit.exclusive():
+            self._sync()
+            yield
 
     def _reject_invalid(self, request_id: str, payload: dict, errors: list[str], rule_id: str) -> dict:
         agent = payload.get("agent_id") if isinstance(payload.get("agent_id"), str) else "unknown"
@@ -277,7 +315,7 @@ class GatewayService:
 
     def propose_action(self, payload: dict, tags: dict | None = None, authenticated_as: str | None = None) -> dict:
         """`authenticated_as` is the agent id bound to the caller's API key; None only for in-process harness use."""
-        with self._lock:
+        with self._txn():
             self.sweep_expired()
             request_id = f"req-{uuid.uuid4().hex[:12]}"
             if tags:
@@ -355,9 +393,11 @@ class GatewayService:
                 record["execution"] = {"status": "not_executed", "adapter": "shadow",
                                        "result_summary": "shadow mode: verdict only, nothing was executed"}
             rec = self._append(record)
+            self._seen_req.add(request_id)
             self.anomaly.observe(agent_id, verb, target["id"], now_ts)
             if shadow:
                 if decision in ("allow", "allow_monitor"):        # the caller proceeds on its own: count it
+                    self._counted.add(request_id)
                     self._history.append({"agent_id": agent_id, "action": verb, "params": params, "ts": now_ts})
                 return self._response(rec)
             if decision == "require_approval":
@@ -375,6 +415,7 @@ class GatewayService:
         verification = None
         if res["status"] == "executed":
             verification = verify_effect(action, res["raw"], self.view)
+            self._counted.add(rec["request_id"])
             self._history.append({"agent_id": action["agent_id"], "action": action["action"],
                                   "params": action["parameters"], "ts": self.clock()})
         snapshot = _strip_chain(rec)
@@ -388,7 +429,7 @@ class GatewayService:
     def resolve_approval(self, request_id: str, approver_id: str, outcome: str, note: str = "") -> dict:
         if outcome not in ("approved", "rejected"):
             raise RequestError("outcome must be 'approved' or 'rejected'")
-        with self._lock:
+        with self._txn():
             self.sweep_expired()
             rec = self.audit.latest_for_request(request_id)
             if rec is None:
@@ -412,7 +453,7 @@ class GatewayService:
 
     # ------------------------------------------------------------------ containment
     def set_containment(self, active: bool, by: str, reason: str = "") -> dict:
-        with self._lock:
+        with self._txn():
             self.containment = active
             rec = self._append({
                 "schema_version": "0.1", "request_id": f"sys-{uuid.uuid4().hex[:12]}", "agent_id": by[:64],
@@ -453,13 +494,17 @@ class GatewayService:
         """
         if agent_id not in self.policy.raw.get("agents", {}) and audited:
             raise RequestError("unknown agent", 404)
-        with self._lock:
+        with self._txn():
             self._log_event(by, "RESET_CONTEXT", {"agent_id": agent_id},
                             f"Session taint cleared for {agent_id} by {by}", prefix="sys" if audited else "log")
             self.prov.reset_context(agent_id)
             return {"agent_id": agent_id, "tainted_by": []}
 
     def agents_view(self) -> list[dict]:
+        with self._txn():
+            return self._agents_view()
+
+    def _agents_view(self) -> list[dict]:
         now = self.clock()
         out = []
         for aid, cfg in self.policy.raw.get("agents", {}).items():
@@ -498,7 +543,8 @@ class GatewayService:
     # ------------------------------------------------------------------ read models
     def requests_view(self, limit: int = 200) -> list[dict]:
         """Latest snapshot per request, newest first, with derived status and demo tags."""
-        self.sweep_expired()
+        with self._txn():
+            self.sweep_expired()
         latest: dict[str, dict] = {}
         first: dict[str, dict] = {}
         n_events: dict[str, int] = {}

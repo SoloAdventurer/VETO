@@ -28,10 +28,27 @@ compromised gateway still cannot rewrite history. A database superuser or the ta
 the hash chain (verified at every start) and external anchoring (not built yet) are for. Use TLS to the database
 (`?sslmode=verify-full`) and keep the DSN in a secrets manager, not in git.
 
+## Running several gateway processes (D-026)
+Point every process at the same database (`VETO_DB=postgresql://...`; keys default to the same database unless
+`VETO_AUTH_DB` says otherwise). The audit log is the shared state: before every decision a process takes a
+database-wide lock, applies whatever the others appended (containment, observations and taint, resets, executed
+actions for limits, held and decided approvals, anomaly history), decides, appends, and releases. Consequences, all
+tested in `tests/test_multi_gateway.py`:
+* Containment engaged on one process blocks the others on their next request.
+* Taint from an observation seen through one process applies to the agent's actions through another.
+* An approval held on one process can be decided on another; the pending cap and expiry are global.
+* Volume limits count actions from all processes, and simultaneous requests cannot overspend them (a control run
+  without the lock executed 6 exports of 100 rows against a 500-row limit).
+* API keys, roles and revocations are shared.
+The cost is that decisions are serialised across processes, so extra processes add availability, not throughput.
+
 ## Known limits
-* Startup, `verify()` and replay read the whole log (`all()`); fine for a thesis or pilot, needs a streaming or
-  checkpointed verify before millions of records.
-* Only the audit log moved. Principals and API keys (`VETO_AUTH_DB`) and the approval queue are still per-process,
-  so running two gateway replicas needs those moved too (rate limits, lockout counters and anomaly baselines are
-  in memory by design). Do not claim high availability until that is done.
-* One gateway failing mid-write simply raises (fail closed); there is no retry or buffering.
+* Decisions serialise on one lock. Fine for governance traffic, not a scaling strategy.
+* Per-process by design: sign-in rate limits and lockout counters (each process counts its own), and the mock
+  resource's door and personnel state (a real resource sits outside the gateway; the mock is a simulator).
+* Observation ids come from a per-process counter, so two processes can pick the same id at the same moment; the
+  second registration is refused with 409 (safe, but the caller must retry with a new id).
+* A process that cannot reach the database fails closed (requests error, nothing executes). Nothing here provides
+  database failover; use managed PostgreSQL with a standby for that.
+* Startup, `verify()` and replay read the whole log (`all()`); fine for a thesis or pilot, needs a checkpointed
+  verify before millions of records.

@@ -1,37 +1,18 @@
 """One contract for every audit backend (SQLite always; PostgreSQL when VETO_TEST_PG_DSN is set, DECISIONS D-025)."""
 
-import os
 import threading
-import uuid
 
 import pytest
+from conftest import BACKENDS
 from veto.audit import open_audit
 from veto.gateway.scenarios import run_scenario
 from veto.gateway.service import GatewayService
-
-PG = os.environ.get("VETO_TEST_PG_DSN")
-BACKENDS = ["sqlite", pytest.param("postgres", marks=pytest.mark.skipif(not PG, reason="VETO_TEST_PG_DSN not set"))]
 
 
 def _record(rid="req-1", decision="block"):
     return {"schema_version": "0.1", "request_id": rid, "agent_id": "ops-agent-1",
             "requested_action": {"action": "READ_PERSONNEL"}, "action_hash": "a" * 64, "decision": decision,
             "policy_version": "t", "decision_reason": "t", "policies_evaluated": []}
-
-
-@pytest.fixture
-def target(request, tmp_path):
-    if request.param == "sqlite":
-        yield str(tmp_path / "a.db")
-        return
-    import psycopg
-    schema = "t_" + uuid.uuid4().hex[:10]
-    with psycopg.connect(PG, autocommit=True) as c:
-        c.execute(f"CREATE SCHEMA {schema}")
-    sep = "&" if "?" in PG else "?"
-    yield f"{PG}{sep}options=-csearch_path%3D{schema}"
-    with psycopg.connect(PG, autocommit=True) as c:
-        c.execute(f"DROP SCHEMA {schema} CASCADE")
 
 
 def tamper(log, target):
