@@ -334,13 +334,14 @@ def test_postgres_row_level_security_hides_other_tenants_even_from_a_buggy_query
     import uuid
 
     import psycopg
+    import psycopg.conninfo
     base = os.environ["VETO_TEST_PG_DSN"]
     schema, role = "t_" + uuid.uuid4().hex[:10], "veto_rls_" + uuid.uuid4().hex[:8]
     sep = "&" if "?" in base else "?"
     admin_dsn = f"{base}{sep}options=-csearch_path%3D{schema}"
     with psycopg.connect(base, autocommit=True) as c:
         c.execute(f"CREATE SCHEMA {schema}")
-        c.execute(f"CREATE ROLE {role} LOGIN")
+        c.execute(f"CREATE ROLE {role} LOGIN PASSWORD 'rls-test'")
     try:
         a, b = open_audit(admin_dsn, "alpha"), open_audit(admin_dsn, "beta")           # as owner: creates the table
         for log in (a, b):
@@ -351,7 +352,7 @@ def test_postgres_row_level_security_hides_other_tenants_even_from_a_buggy_query
             c.execute(f"GRANT USAGE ON SCHEMA {schema} TO {role}")
             c.execute(f"GRANT SELECT, INSERT ON {schema}.audit TO {role}")
             c.execute(f"GRANT USAGE ON ALL SEQUENCES IN SCHEMA {schema} TO {role}")
-        user_dsn = admin_dsn.replace("pgtest@", f"{role}@", 1) if "pgtest@" in admin_dsn else admin_dsn
+        user_dsn = psycopg.conninfo.make_conninfo(admin_dsn, user=role, password="rls-test")
         from veto.audit.postgres import PostgresAuditLog
         alpha = PostgresAuditLog(user_dsn, "alpha", migrate=False)        # least-privilege role: no DDL
         raw = alpha._conn().execute("SELECT DISTINCT tenant FROM audit").fetchall()    # a query with NO tenant filter
