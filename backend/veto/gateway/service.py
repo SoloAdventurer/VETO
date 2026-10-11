@@ -28,7 +28,7 @@ from veto.canonical import action_hash, canonical_action, canonical_json, sha256
 from veto.execution.gateway import DecisionSigner, ExecutionGateway
 from veto.paths import DEFAULT_POLICY, SCHEMAS_DIR
 from veto.policy.engine import Facts, PolicyEngine
-from veto.policy.loader import load_policy
+from veto.policy.loader import load_policy, load_policy_text
 from veto.provenance.registry import DEFAULT_TAINT_WINDOW_S, ProvenanceRegistry
 from veto.risk.scorer import score_risk
 from veto.verification.verifier import verify_effect
@@ -59,17 +59,21 @@ def _iso_now() -> str:
 
 class GatewayService:
     def __init__(self, policy_path: Path | str | None = None, db_path: str = ":memory:",
-                 clock: Callable[[], float] = time.time, mode: str = "enforce") -> None:
+                 clock: Callable[[], float] = time.time, mode: str = "enforce", tenant: str = "default",
+                 policy_text: str | None = None, platform_check: Callable[[], bool] | None = None) -> None:
         if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
         self.mode = mode
+        self.tenant = tenant
         self.clock = clock
-        self.policy = load_policy(policy_path or DEFAULT_POLICY)
+        self.policy = load_policy_text(policy_text) if policy_text else load_policy(policy_path or DEFAULT_POLICY)
         self.engine = PolicyEngine(self.policy.raw)
-        self.audit = open_audit(db_path)
+        self.audit = open_audit(db_path, tenant)
+        self._platform_check = platform_check or (lambda: False)
+        self._platform_contained = False
+        self._containment = False
         self.prov = ProvenanceRegistry()
         self.anomaly = AnomalyDetector(working_hours=self.policy.raw.get("anomaly", {}).get("working_hours"))
-        self.containment = False
         self.tags: dict[str, dict] = {}
         self._history: list[dict] = []        # executed actions, for windowed counters
         self._lock = threading.RLock()
@@ -90,6 +94,16 @@ class GatewayService:
         self._counted: set[str] = set()
         self._restored_obs = 0
         self._start()
+
+    @property
+    def containment(self) -> bool:
+        """This tenant's kill switch OR the platform-wide one (D-027). Releasing the tenant's own switch can never
+        override the platform's."""
+        return self._containment or self._platform_contained
+
+    @containment.setter
+    def containment(self, value: bool) -> None:
+        self._containment = bool(value)
 
     @property
     def max_pending_per_agent(self) -> int:
@@ -256,6 +270,7 @@ class GatewayService:
         """One decision, atomic across gateway processes: take the cross-process lock, catch up with everything the
         others appended, run, release. A failure to catch up raises, so the request fails closed."""
         with self._lock, self.audit.exclusive():
+            self._platform_contained = bool(self._platform_check())      # once per decision, fails closed on error
             self._sync()
             yield
 

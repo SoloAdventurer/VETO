@@ -19,7 +19,11 @@ class LoadedPolicy:
 
 
 def load_policy(path: Path | str) -> LoadedPolicy:
-    text = Path(path).read_text(encoding="utf-8")
+    return load_policy_text(Path(path).read_text(encoding="utf-8"))
+
+
+def load_policy_text(text: str) -> LoadedPolicy:
+    """Parse and validate a policy given as text (tenant policies are stored in the database)."""
     raw = yaml.safe_load(text)
     errors = validate_policy(raw)
     if errors:

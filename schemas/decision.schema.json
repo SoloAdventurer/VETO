@@ -252,6 +252,11 @@
         "enforce",
         "shadow"
       ]
+    },
+    "tenant": {
+      "type": "string",
+      "pattern": "^(_platform|[a-z][a-z0-9-]{1,39}|default)$",
+      "description": "Tenant whose chain this record belongs to (D-027). Absent on legacy records, which belong to 'default'."
     }
   }
 }

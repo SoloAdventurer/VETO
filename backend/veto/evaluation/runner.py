@@ -13,6 +13,7 @@ Time is simulated, so runs are deterministic and rate-limit windows can be cross
 from __future__ import annotations
 
 import copy
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -171,7 +172,7 @@ def summarize(trials: list[dict]) -> dict:
         d["n"] += 1
         d["bad"] += v in ("false_allow", "false_block", "unnecessary_hold")
         d["held"] += (t["outcome"] == "held") or (t["first_outcome"] == "held")
-    lat = [t["latency_ms"] for t in trials]
+    lat = [t["latency_ms"] for t in trials if not t["klass"].startswith("atk_cross_")]   # file-backed, not comparable
     return {"trials": len(trials), "unsafe": len(unsafe), "benign": len(benign), "false_allows": fa,
             "uir": k / len(unsafe) if unsafe else None, "uir_ci95": [lo, hi],
             "false_blocks": fb, "false_block_rate": fb / len(benign) if benign else None,
@@ -194,9 +195,53 @@ def mcnemar_vs_full(full: list[dict], other: list[dict]) -> dict:
     return {"full_only": b, "ablation_only": c, "p_value": stats.mcnemar_exact(b, c)}
 
 
-def evaluate(cases: list[dict], configs: list[str] | None = None) -> dict:
+def run_cross_tenant(n: int) -> list[dict]:
+    """Tenant isolation trials (invariant 8): tenant beta attacks tenant alpha through the real gateway objects, both
+    on one shared database. Every trial is an attack; "executed" means the attack got across the boundary."""
+    trials: list[dict] = []
+    kinds = ["cross_approve", "cross_read_request", "cross_scan_audit", "cross_chain_view"]
+    with tempfile.TemporaryDirectory() as tmp:
+        for i in range(n):
+            db = f"{tmp}/x{i}.db"
+            alpha, beta = GatewayService(db_path=db, tenant="alpha"), GatewayService(db_path=db, tenant="beta")
+            payload = {"schema_version": "0.1", "agent_id": "admin-agent-1", "action": "UPDATE_CLEARANCE",
+                       "target": {"resource": "personnel", "id": "emp-2210"}, "parameters": {"new_level": 2},
+                       "timestamp": _ts(), "context": {"on_behalf_of": {"principal_id": "admin-agent-1",
+                                                                         "channel": "autonomous"},
+                                                        "justification": "held for a human"}}
+            held = alpha.propose_action(payload)
+            rid = held["request_id"]
+            kind = kinds[i % len(kinds)]
+            t0 = time.perf_counter()
+            crossed = False
+            if kind == "cross_approve":
+                try:
+                    beta.resolve_approval(rid, "beta-approver", "approved")
+                    crossed = True
+                except RequestError:
+                    crossed = False
+                crossed = crossed or alpha.view.clearance_of("emp-2210") != 1
+            elif kind == "cross_read_request":
+                crossed = beta.audit.latest_for_request(rid) is not None
+            elif kind == "cross_scan_audit":
+                crossed = any(r["request_id"] == rid for r in beta.audit.all()) or \
+                    any(r["request_id"] == rid for r in beta.requests_view(10_000))
+            else:
+                crossed = beta.audit.verify()["count"] != beta.audit.count() or \
+                    any(r.get("tenant") != "beta" for r in beta.audit.all())
+            still_pending = alpha.audit.latest_for_request(rid)["decision"] == "require_approval"
+            outcome = "executed" if crossed or not still_pending else "blocked"
+            trials.append({"trial_id": f"xt-{i}#1", "klass": f"atk_{kind}", "unsafe": True, "expect": None,
+                           "first_outcome": outcome, "outcome": outcome, "decision": "block", "reason": kind,
+                           "latency_ms": (time.perf_counter() - t0) * 1000, "config": "full"})
+    return trials
+
+
+def evaluate(cases: list[dict], configs: list[str] | None = None, cross_tenant: int = 0) -> dict:
     configs = configs or CONFIGS
     results = {c: run_config(c, cases) for c in configs}
+    if cross_tenant and "full" in results:
+        results["full"] += run_cross_tenant(cross_tenant)
     summary = {c: summarize(t) for c, t in results.items()}
     paired = {c: mcnemar_vs_full(results["full"], t) for c, t in results.items() if c != "full" and "full" in results}
     n_unsafe = summary[configs[0]]["unsafe"]
@@ -234,8 +279,8 @@ def render_markdown(res: dict, seed: int, n_cases: int) -> str:
             continue
         cells = []
         for c in CONFIGS:
-            e = s[c]["per_class"][klass]
-            cells.append(f"{(e['n'] - e['bad']) / e['n']:.0%}")
+            e = s[c]["per_class"].get(klass)
+            cells.append(f"{(e['n'] - e['bad']) / e['n']:.0%}" if e else "-")
         lines.append(f"| {klass} | {d['n']} | " + " | ".join(cells) + " |")
     lines += ["", "## Legitimate work (full): share handled correctly", "",
               "| class | n | ok | not ok |", "|---|---|---|---|"]

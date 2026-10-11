@@ -117,13 +117,13 @@ def test_approval_expiry_is_seen_by_both(target):
 @pytest.mark.parametrize("target", BACKENDS, indirect=True)
 def test_keys_and_revocations_are_shared(target):
     s1, s2 = PrincipalStore(target), PrincipalStore(target)
-    s1.create_principal("ops-agent-1", ["agent"])
-    key_id, key = s1.issue_key("ops-agent-1")
+    s1.create_principal("ops-agent-1", ["agent"], tenant="default")
+    key_id, key = s1.issue_key("ops-agent-1", tenant="default")
     assert s2.authenticate(key).id == "ops-agent-1"
     with pytest.raises(AuthError) as e:
-        s2.create_principal("ops-agent-1", ["agent"])
+        s2.create_principal("ops-agent-1", ["agent"], tenant="default")
     assert e.value.status == 409
-    s1.revoke_key(key_id)
+    s1.revoke_key(key_id, tenant="default")
     assert s2.authenticate(key) is None                                # revoked on one, refused on the other
 
 

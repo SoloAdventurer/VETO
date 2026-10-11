@@ -42,8 +42,14 @@ tested in `tests/test_multi_gateway.py`:
 * API keys, roles and revocations are shared.
 The cost is that decisions are serialised across processes, so extra processes add availability, not throughput.
 
+## Row-level security and least privilege (D-027)
+The audit table has row-level security forced on, with one policy: a row is visible and insertable only when its
+`tenant` equals the connection's `veto.tenant` setting, which the gateway pins at connect time. Run the gateway as the
+role from the setup above and set `VETO_DB_MIGRATE=0` so it never runs DDL; run once as the owner (default setting) to
+create or migrate tables. Superusers and the table owner bypass the policy.
+
 ## Known limits
-* Decisions serialise on one lock. Fine for governance traffic, not a scaling strategy.
+* Decisions serialise per tenant (not across tenants) on one lock. Fine for governance traffic, not a scaling strategy.
 * Per-process by design: sign-in rate limits and lockout counters (each process counts its own), and the mock
   resource's door and personnel state (a real resource sits outside the gateway; the mock is a simulator).
 * Observation ids come from a per-process counter, so two processes can pick the same id at the same moment; the

@@ -112,9 +112,9 @@ function Dashboard({ me, signOut }: { me: Me; signOut: () => void }) {
                 </span>
               </Fragment>
             )}
-            {state?.auth && state.auth.failures > 0 && <span title="Rejected authentication attempts" className="text-warn">auth failures {state.auth.failures}</span>}
+            {state?.auth && (state.auth.rate_limited ?? 0) > 0 && <span title="Requests refused because this tenant's callers exceeded their rate limit" className="text-warn">throttled {state.auth.rate_limited}</span>}
             <span className="flex items-center gap-2 text-ink" title={me.roles.join(", ")}>
-              {me.id}
+              {me.tenant && <span className="text-mute">{me.tenant} /</span>} {me.id}
               <button className="btn !px-2 !py-1" onClick={signOut} aria-label="Sign out"><LogOut size={12} /></button>
             </span>
             <span className={cx("flex items-center gap-1.5", offline ? "text-bad" : "text-ok")}>

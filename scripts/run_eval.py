@@ -20,7 +20,7 @@ def main() -> int:
     ap.add_argument("--out", default=str(ROOT / "experiments" / "results"))
     args = ap.parse_args()
     cases = generate(args.seed, args.scale, trusted_personnel())
-    res = evaluate(cases)
+    res = evaluate(cases, cross_tenant=max(4, round(40 * args.scale)))
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.md").write_text(render_markdown(res, args.seed, len(cases)))

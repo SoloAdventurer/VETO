@@ -7,6 +7,12 @@
   python3 scripts/veto_admin.py key ops-agent-1                 # prints the new key ONCE
   python3 scripts/veto_admin.py revoke key-1a2b3c4d5e6f
   python3 scripts/veto_admin.py disable ops-agent-1
+
+Platform administration (VETO_ADMIN_KEY must then be a platform administrator key):
+  python3 scripts/veto_admin.py tenants
+  python3 scripts/veto_admin.py tenant-create acme "Acme Corp"        # prints the tenant admin key ONCE
+  python3 scripts/veto_admin.py tenant-suspend acme | tenant-resume acme
+  python3 scripts/veto_admin.py platform-kill on|off [reason]
 """
 
 from __future__ import annotations
@@ -50,6 +56,16 @@ def main(argv: list[str]) -> None:
         print(call("DELETE", f"/v1/admin/keys/{args[0]}"))
     elif cmd == "disable" and len(args) == 1:
         print(call("POST", f"/v1/admin/principals/{args[0]}/disable"))
+    elif cmd == "tenants":
+        for t in call("GET", "/v1/platform/tenants"):  # type: ignore[union-attr]
+            print(f"{t['id']:24} {t['status']:10} records={t['records']:<8} loaded={t['loaded']} name={t['name']}")
+    elif cmd == "tenant-create" and len(args) >= 1:
+        res = call("POST", "/v1/platform/tenants", {"id": args[0], "name": args[1] if len(args) > 1 else args[0]})
+        print(f"tenant: {res['tenant']}\nadmin:  {res['admin_id']}\nkey:    {res['key']}\n(shown once; store it now)")  # type: ignore[index]
+    elif cmd in ("tenant-suspend", "tenant-resume") and len(args) == 1:
+        print(call("POST", f"/v1/platform/tenants/{args[0]}/{cmd.split('-')[1]}"))
+    elif cmd == "platform-kill" and args and args[0] in ("on", "off"):
+        print(call("POST", "/v1/platform/containment", {"active": args[0] == "on", "reason": " ".join(args[1:])}))
     else:
         sys.exit(__doc__)
 

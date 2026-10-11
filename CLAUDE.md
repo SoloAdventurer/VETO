@@ -13,6 +13,7 @@ VETO (Verified Execution and Trusted Oversight for Autonomous AI Agents) is a do
 5. Only the Execution Gateway holds resource credentials; resources sit on a private network. Execution is bound to the action hash.
 6. Audit is append-only and hash-chained; written BEFORE execution. Fail closed.
 7. Policy grammar is closed: no eval, no arbitrary expressions.
+8. Tenant isolation: no data path or decision crosses a tenant boundary. The tenant comes from the API key, never from the request; every audit and key query is filtered by it; each tenant has its own hash chain (D-027).
 
 ## Layout
 - `backend/veto/` Python 3.11 + FastAPI + Pydantic v2: gateway, authorization, policy, provenance, risk, anomaly, execution, verification, audit, adapters

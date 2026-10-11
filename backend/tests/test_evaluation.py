@@ -46,9 +46,10 @@ def test_dataset_is_deterministic_and_labelled():
 
 def test_full_system_has_no_false_allows_and_ablations_are_worse():
     cases = dataset.generate(11, 0.3, trusted_personnel())
-    res = evaluate(cases, ["full", "provenance_blind", "rules_only"])
+    res = evaluate(cases, ["full", "provenance_blind", "rules_only"], cross_tenant=8)
     full = res["summary"]["full"]
     assert full["false_allows"] == 0, [t for t in res["trials"]["full"] if classify(t) == "false_allow"]
+    assert any(t["klass"].startswith("atk_cross_") for t in res["trials"]["full"])      # isolation is in the gate
     assert full["false_blocks"] == 0 and full["unnecessary_holds"] == 0
     assert res["summary"]["provenance_blind"]["false_allows"] > 0
     assert res["summary"]["rules_only"]["false_allows"] > 0

@@ -11,7 +11,7 @@ export const auth = {
   onUnauthorized: (fn: () => void) => { onUnauthorized = fn; },
 };
 
-export interface Me { id: string; roles: string[]; demo: boolean }
+export interface Me { id: string; roles: string[]; tenant: string | null; demo: boolean }
 
 async function call<T>(path: string, init?: RequestInit, key?: string): Promise<T> {
   const token = key ?? auth.get();

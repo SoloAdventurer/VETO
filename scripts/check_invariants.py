@@ -74,6 +74,33 @@ if any(f == ".env" or f.endswith("/.env") for f in tracked):
 if any(f.upper() in {"LICENSE", "LICENSE.MD", "LICENSE.TXT"} for f in tracked):
     errors.append("LICENSE present but D-009 (IP) is open; remove or log a superseding decision first")
 
+# --- 7. Tenant isolation (invariant 8, D-027) ---
+# (a) Every SQL string in the audit backends that reads or writes the audit table must filter on the tenant.
+# (b) No audit-log method may take a tenant argument: a log object is bound to one tenant for life, so there is no
+#     way to ask it about another one. (__init__, seal, verify_chain and the factory are where a tenant is chosen.)
+# (c) The gateway app may only pick a tenant's runtime from the authenticated principal (or the literal "default").
+SQL_AUDIT = re.compile(r"\b(FROM|INTO|UPDATE)\s+audit\b", re.I)
+for name in ("chain.py", "postgres.py"):
+    path = ROOT / "backend" / "veto" / "audit" / name
+    tree = ast.parse(path.read_text(), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and SQL_AUDIT.search(node.value) \
+                and "tenant" not in node.value:
+            errors.append(f"{path.relative_to(ROOT)}:{node.lineno}: SQL on the audit table without a tenant filter")
+        if isinstance(node, ast.ClassDef):
+            for fn in node.body:
+                if isinstance(fn, ast.FunctionDef) and fn.name != "__init__" and \
+                        any(a.arg == "tenant" for a in fn.args.args + fn.args.kwonlyargs):
+                    errors.append(f"{path.relative_to(ROOT)}:{fn.lineno}: {node.name}.{fn.name} takes a tenant "
+                                  "argument")
+app_src = (ROOT / "backend" / "veto" / "gateway" / "app.py").read_text()
+for m in re.finditer(r"runtimes\.(get|reset)\(([^)]*)\)", app_src):
+    arg = m.group(2).strip()
+    if arg not in ('"default"', "principal.tenant"):
+        errors.append(f"gateway/app.py: runtimes.{m.group(1)}({arg}) must use the authenticated principal's tenant")
+if re.search(r"headers\.get\(\s*[\"']x-tenant|query_params.*tenant", app_src, re.I):
+    errors.append("gateway/app.py: the tenant must never be read from request headers or query parameters")
+
 if errors:
     print("INVARIANT CHECK FAILED:")
     print("\n".join(" - " + e for e in errors))

@@ -118,7 +118,7 @@ export interface AppState {
   agents: AgentView[];
   taint_window_s: number;
   mode?: "enforce" | "shadow";
-  auth?: { failures: number; rate_limited?: number; lockouts?: number };
+  auth?: { rate_limited?: number };
   containment: boolean;
   doors: Door[];
   personnel: Person[];

@@ -14,6 +14,7 @@ services:
       # VETO_MODE: "shadow"   # verdicts only, nothing enforced or executed (default: enforce)
       # DEMO-ONLY admin key so the dashboard can be signed in to. Override it (VETO_BOOTSTRAP_KEY=veto_...) for anything
       # beyond a local demo, and create real principals with scripts/veto_admin.py.
+      # VETO_PLATFORM_KEY: "veto_..."   # platform administrator: creates and suspends tenants (/v1/platform/*)
       VETO_BOOTSTRAP_KEY: "${VETO_BOOTSTRAP_KEY:-veto_demo-only-key-change-me-0000}"
     volumes:
       - veto-data:/data

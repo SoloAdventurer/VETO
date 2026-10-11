@@ -137,10 +137,13 @@ def test_old_failures_age_out_of_the_window():
 
 
 # ---------------------------------------------------------------- API integration
+PLATFORM = "veto_test-platform-admin-key-000000"
+
+
 def api(**kw):
     clock = kw.pop("clock", Clock())
     c = TestClient(create_app(GatewayService(clock=clock), demo=True, store=PrincipalStore(), bootstrap_key=ADMIN,
-                              clock=clock, **kw))
+                              clock=clock, platform_key=PLATFORM, **kw))
     return c, clock
 
 
@@ -181,7 +184,8 @@ def test_repeated_bad_keys_lock_the_client_out_even_with_a_valid_key():
     assert r.status_code == 429 and int(r.headers["Retry-After"]) >= 1
     clock.t += 121
     assert c.get("/v1/state", headers=bearer(ADMIN)).status_code == 200
-    assert c.get("/v1/state", headers=bearer(ADMIN)).json()["auth"]["lockouts"] >= 1
+    assert c.get("/v1/platform/state", headers=bearer(PLATFORM)).json()["auth"]["lockouts"] >= 1
+    assert "lockouts" not in c.get("/v1/state", headers=bearer(ADMIN)).json()["auth"]   # tenants never see the rest
 
 
 def test_public_endpoints_never_lock_out_or_count():

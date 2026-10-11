@@ -138,14 +138,14 @@ def test_key_rotation_old_key_dies_new_key_works(env):
 def test_roles_validation_and_agent_exclusivity(env):
     s = PrincipalStore()
     with pytest.raises(AuthError):
-        s.create_principal("mixed-1", ["agent", "approver"])
+        s.create_principal("mixed-1", ["agent", "approver"], tenant="default")
     with pytest.raises(AuthError):
-        s.create_principal("badrole", ["root"])
+        s.create_principal("badrole", ["root"], tenant="default")
     with pytest.raises(AuthError):
-        s.create_principal("Bad Id", ["viewer"])
-    s.create_principal("ok-one", ["viewer"])
+        s.create_principal("Bad Id", ["viewer"], tenant="default")
+    s.create_principal("ok-one", ["viewer"], tenant="default")
     with pytest.raises(AuthError):
-        s.create_principal("ok-one", ["viewer"])
+        s.create_principal("ok-one", ["viewer"], tenant="default")
     assert env.c.post("/v1/admin/principals", json={"id": "x1", "roles": ["agent", "admin"]},
                       headers=env.admin).status_code == 400
 
@@ -196,7 +196,7 @@ def test_bootstrap_is_idempotent_and_validates_key():
     s = PrincipalStore()
     s.bootstrap(ADMIN)
     s.bootstrap(ADMIN)
-    assert len(s.list_principals()) == 1 and len(s.list_principals()[0]["keys"]) == 1
+    assert len(s.list_principals(tenant="default")) == 1 and len(s.list_principals(tenant="default")[0]["keys"]) == 1
     with pytest.raises(AuthError):
         s.bootstrap("short")
     assert s.authenticate(ADMIN).has("admin", "approver", "operator", "viewer")
@@ -205,8 +205,8 @@ def test_bootstrap_is_idempotent_and_validates_key():
 def test_principals_persist_across_restart():
     path = Path(tempfile.mkdtemp()) / "auth.db"
     s = PrincipalStore(str(path))
-    s.create_principal("persist-me", ["viewer"])
-    _, key = s.issue_key("persist-me")
+    s.create_principal("persist-me", ["viewer"], tenant="default")
+    _, key = s.issue_key("persist-me", tenant="default")
     s2 = PrincipalStore(str(path))
     assert s2.authenticate(key).id == "persist-me"
     assert sqlite3.connect(path).execute("SELECT count(*) FROM api_keys").fetchone()[0] == 1
