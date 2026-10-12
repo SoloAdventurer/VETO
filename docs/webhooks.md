@@ -31,7 +31,7 @@ Idempotency-Key: <zap run id>         (optional; a retry returns the first answe
 Reply:
 ```json
 { "hook": "lookup-employee", "request_id": "req-...", "decision": "allow", "status": "executed",
-  "executed": true, "pending_approval": false, "blocked": false, "reason": "...",
+  "executed": true, "verified": true, "pending_approval": false, "blocked": false, "reason": "...",
   "effective_provenance": ["email"], "action_hash": "..." }
 ```
 In Zapier or Make add a filter on `blocked` / `pending_approval` / `executed`. For held actions poll `GET /v1/actions/{request_id}` (needs a viewer key or the same agent key).
@@ -42,4 +42,4 @@ In Zapier or Make add a filter on `blocked` / `pending_approval` / `executed`. F
 * Errors: 401 bad key, 403 not an agent key, 404 unknown hook or another agent's hook, 413 body over 32 KB, 422 missing field or bad value (nothing is written), 409 same Idempotency-Key still being processed.
 
 ## Limits
-Inbound only. Execution is still against the built-in mock resource, so `executed: true` does not mean a change in the automation's own systems. An automation that ignores `blocked` and acts anyway is outside VETO's reach until an outbound adapter holds the real credentials (invariant 5) or the MCP proxy (D-008) exists.
+Hooks are the inbound half. Pair them with an outbound connector (`docs/connectors.md`) so VETO itself performs the action on your system; without one, `executed` refers to the built-in mock, and an automation that ignores `blocked` and acts anyway is outside VETO's reach. `verified` is false when the effect could not be checked (always the case for connector executions).

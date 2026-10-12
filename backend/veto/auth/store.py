@@ -57,6 +57,10 @@ CREATE TABLE IF NOT EXISTS webhooks (
   tenant TEXT NOT NULL, name TEXT NOT NULL, spec TEXT NOT NULL, created_by TEXT NOT NULL,
   created_at DOUBLE PRECISION NOT NULL, PRIMARY KEY (tenant, name)
 );
+CREATE TABLE IF NOT EXISTS connectors (
+  tenant TEXT NOT NULL, name TEXT NOT NULL, meta TEXT NOT NULL, sealed TEXT NOT NULL, created_by TEXT NOT NULL,
+  created_at DOUBLE PRECISION NOT NULL, PRIMARY KEY (tenant, name)
+);
 CREATE TABLE IF NOT EXISTS hook_calls (
   tenant TEXT NOT NULL, hook TEXT NOT NULL, idem_key TEXT NOT NULL, request_id TEXT,
   created_at DOUBLE PRECISION NOT NULL, PRIMARY KEY (tenant, hook, idem_key)
@@ -220,6 +224,38 @@ class PrincipalStore:
                 except self._db.integrity_error:
                     continue
         raise AuthError("could not allocate a policy version; retry", 409)
+
+    # ---------------------------------------------------------------- connectors (sealed; this class never opens them)
+    def put_connector(self, tenant: str, name: str, meta: dict, sealed: str, by: str) -> None:
+        import json
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO connectors (tenant, name, meta, sealed, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (tenant, name) DO UPDATE SET meta = excluded.meta, sealed = excluded.sealed, "
+                "created_by = excluded.created_by, created_at = excluded.created_at",
+                (tenant, name, json.dumps(meta), sealed, by, self._clock()))
+            self._db.commit()
+
+    def connector_rows(self, tenant: str) -> list[dict]:
+        """Everything including the sealed blob. For the Execution Gateway's router only; never sent to a client."""
+        import json
+        with self._lock:
+            rows = self._db.execute("SELECT name, meta, sealed FROM connectors WHERE tenant = ? ORDER BY name",
+                                    (tenant,)).fetchall()
+        return [{"name": r[0], "meta": json.loads(r[1]), "sealed": r[2]} for r in rows]
+
+    def list_connectors(self, tenant: str) -> list[dict]:
+        import json
+        with self._lock:
+            rows = self._db.execute("SELECT name, meta, created_by, created_at FROM connectors WHERE tenant = ? "
+                                    "ORDER BY name", (tenant,)).fetchall()
+        return [{"name": r[0], **json.loads(r[1]), "created_by": r[2], "created_at": r[3]} for r in rows]
+
+    def delete_connector(self, tenant: str, name: str) -> bool:
+        with self._lock:
+            cur = self._db.execute("DELETE FROM connectors WHERE tenant = ? AND name = ?", (tenant, name))
+            self._db.commit()
+            return cur.rowcount > 0
 
     # ---------------------------------------------------------------- webhooks (always inside one tenant)
     def put_hook(self, tenant: str, name: str, spec_json: str, by: str) -> None:

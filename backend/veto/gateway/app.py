@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 
 from veto.auth.store import HUMAN_ROLES, AuthError, Principal, PrincipalStore
 from veto.canonical import sha256_hex
+from veto.execution import connectors
 from veto.gateway import hooks
 from veto.gateway.platform import PlatformLog, Runtimes
 from veto.gateway.ratelimit import FailureLockout, TokenBucketLimiter
@@ -50,13 +51,15 @@ def create_app(service: GatewayService | None = None, demo: bool | None = None,
                store: PrincipalStore | None = None, bootstrap_key: str | None = None,
                clock: Callable[[], float] = time.time, agent_rate: tuple[float, int] | None = None,
                human_rate: tuple[float, int] | None = None, auth_max_failures: int | None = None,
-               auth_lockout_s: float | None = None, platform_key: str | None = None) -> FastAPI:
+               auth_lockout_s: float | None = None, platform_key: str | None = None,
+               connector_net: connectors.Net | None = None) -> FastAPI:
     demo_enabled = demo if demo is not None else os.environ.get("VETO_DEMO", "1") == "1"
     _db = os.environ.get("VETO_DB", ":memory:")
     # With the audit log on PostgreSQL the keys default to the same database, so every gateway process shares them.
     _auth_default = _db if _db.startswith(("postgresql://", "postgres://")) else ":memory:"
     principals = store or PrincipalStore(os.environ.get("VETO_AUTH_DB", _auth_default))
-    runtimes = Runtimes(principals, _db, os.environ.get("VETO_MODE", "enforce"), clock)
+    net = connector_net or connectors.Net()
+    runtimes = Runtimes(principals, _db, os.environ.get("VETO_MODE", "enforce"), clock, net)
     if service is not None:
         runtimes.preload("default", service)
     else:
@@ -329,6 +332,55 @@ def create_app(service: GatewayService | None = None, demo: bool | None = None,
             if owned:
                 principals.finish_call(p.tenant, name, idem, request_id)     # None releases the key for a retry
         return hooks.flat_response(name, resp)
+
+    # ---- outbound connectors (D-030): where the Execution Gateway sends decided actions. Secrets are write-only.
+    def _connector_or_404(tenant: str, name: str) -> dict:
+        row = next((r for r in principals.connector_rows(tenant) if r["name"] == name), None)
+        if row is None:
+            raise HTTPException(404, "unknown connector")
+        return row
+
+    @app.get("/v1/admin/connectors")
+    def connector_list(request: Request):
+        p = who(request, "admin")
+        return {"storage_ready": connectors.available(), "connectors": principals.list_connectors(p.tenant)}
+
+    @app.put("/v1/admin/connectors/{name}")
+    def connector_put(request: Request, name: str, payload: dict[str, Any]):
+        p = who(request, "admin")
+        previous = next((r["sealed"] for r in principals.connector_rows(p.tenant) if r["name"] == name), None)
+        try:
+            made = connectors.define(p.tenant, name, payload, previous, net)
+        except connectors.ConnectorError as exc:
+            raise HTTPException(exc.status, f"invalid connector: {exc}") from exc
+        principals.put_connector(p.tenant, name, made["meta"], made["sealed"], p.id)
+        svc(request).record_system_event(
+            p.id, "CONNECTOR_SET", {"name": name, **made["meta"], "secret_rotated": made["new_secret"] is not None},
+            f"Connector {name} ({made['meta']['host']}) set by {p.id}")
+        out = {"name": name, **made["meta"]}
+        if made["new_secret"]:
+            out |= {"signing_secret": made["new_secret"], "note": "shown once; store it where the endpoint can read it"}
+        return out
+
+    @app.delete("/v1/admin/connectors/{name}")
+    def connector_delete(request: Request, name: str):
+        p = who(request, "admin")
+        if not principals.delete_connector(p.tenant, name):
+            raise HTTPException(404, "unknown connector")
+        svc(request).record_system_event(p.id, "CONNECTOR_DELETED", {"name": name},
+                                         f"Connector {name} deleted by {p.id}")
+        return {"deleted": name}
+
+    @app.post("/v1/admin/connectors/{name}/ping")
+    def connector_ping(request: Request, name: str):
+        """A signed 'veto.ping' so an admin can check the endpoint and signature handling. Executes no action."""
+        p = who(request, "admin")
+        row = _connector_or_404(p.tenant, name)
+        s = svc(request)
+        res = s.execution.ping_connector(row)
+        s.record_system_event(p.id, "CONNECTOR_PING", {"name": name, "ok": res["status"] == "executed"},
+                              f"Connector {name} pinged by {p.id}: {res['result_summary']}")
+        return {"ok": res["status"] == "executed", "detail": res["result_summary"]}
 
     # ---- policy editing (D-028)
     def _version_or_404(tenant: str, version: int) -> dict:

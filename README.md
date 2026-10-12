@@ -58,6 +58,9 @@ A tenant admin proposes a new policy (`POST /v1/policy/proposals`), sees a diff 
 ## Zapier, Make and n8n
 An admin defines a *hook* that maps a payload to one action; the automation calls `POST /v1/hooks/{name}` with its agent key and branches on `executed`, `blocked` or `pending_approval` in the reply. Whatever the automation relays is treated as untrusted content, so a hook cannot be used to launder authority: the policy decides exactly as it does for any other agent. Inbound only for now. See `docs/webhooks.md` and DECISIONS D-029.
 
+## Acting on your own systems
+`PUT /v1/admin/connectors/{name}` routes chosen actions to your endpoint as a signed HTTPS webhook. VETO decides and audits first; only the Execution Gateway holds the secret and makes the call, and it refuses unless the decision token and the action hash check out. Targets are limited to public addresses (no internal network or cloud metadata), secrets are sealed per tenant and never shown again. See `docs/connectors.md` and DECISIONS D-030.
+
 ## PostgreSQL
 
 `VETO_DB=postgresql://...` stores the audit log in PostgreSQL instead of SQLite (shared by several gateway processes, append-only enforced by the database). See docs/postgres.md for setup, privileges and limits.

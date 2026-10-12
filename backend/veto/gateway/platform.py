@@ -16,6 +16,7 @@ from veto.audit import open_audit
 from veto.audit.chain import PLATFORM_TENANT
 from veto.auth.store import PrincipalStore
 from veto.canonical import action_hash
+from veto.execution.connectors import Net, Router
 from veto.gateway.service import GatewayService
 
 
@@ -37,8 +38,10 @@ class PlatformLog:
 class Runtimes:
     """One GatewayService per tenant, created on first use from the tenant's stored policy."""
 
-    def __init__(self, store: PrincipalStore, db_target: str, mode: str, clock: Callable[[], float]) -> None:
+    def __init__(self, store: PrincipalStore, db_target: str, mode: str, clock: Callable[[], float],
+                 net: Net | None = None) -> None:
         self._store, self._db, self._mode, self._clock = store, db_target, mode, clock
+        self._net = net
         self._by_tenant: dict[str, GatewayService] = {}
         self._lock = threading.Lock()
 
@@ -52,7 +55,8 @@ class Runtimes:
             raise KeyError(tenant)
         text = self._store.active_policy_text(tenant) or row["policy"]
         return GatewayService(db_path=self._db, mode=self._mode, tenant=tenant, policy_text=text,
-                              platform_check=self._store.platform_contained)
+                              platform_check=self._store.platform_contained,
+                              connectors=Router(tenant, lambda: self._store.connector_rows(tenant), self._net))
 
     def get(self, tenant: str) -> GatewayService:
         with self._lock:

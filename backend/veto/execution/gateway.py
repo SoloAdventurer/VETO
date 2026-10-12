@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 from veto.adapters.mock_security_ops import AccessDenied, MockSecurityOps, ResourceError
 from veto.canonical import action_hash
+from veto.execution.connectors import Router
 
 
 class DecisionSigner:
@@ -32,11 +33,20 @@ class ExecutionGateway:
     ADAPTER = "mock_security_ops"
 
     def __init__(self, resource: MockSecurityOps, access_key: str, signer: DecisionSigner,
-                 containment_active: Callable[[], bool]) -> None:
+                 containment_active: Callable[[], bool], connectors: Router | None = None) -> None:
         self._resource = resource
         self._key = access_key
         self._signer = signer
         self._containment_active = containment_active
+        self._connectors = connectors
+
+    def ping_connector(self, row: dict) -> dict:
+        if self._containment_active():
+            return self._refuse("containment active: no outbound calls")
+        try:
+            return self._connectors.ping(row) if self._connectors else self._refuse("no connectors configured")
+        except Exception as exc:
+            return {"status": "failed", "adapter": "webhook", "result_summary": str(exc)[:200], "raw": None}
 
     def _refuse(self, why: str) -> dict:
         return {"status": "not_executed", "adapter": self.ADAPTER, "result_summary": why, "raw": None}
@@ -48,6 +58,10 @@ class ExecutionGateway:
             return self._refuse("invalid decision token: execution refused")
         if action_hash(action) != ahash:
             return self._refuse("action hash mismatch: action changed after decision (possible tampering)")
+        route = self._connectors.find(action["action"]) if self._connectors else None
+        if route is not None:                                    # the tenant's own system, via its signed webhook
+            return self._connectors.send(route, request_id=request_id, action=action, ahash=ahash,
+                                         decision_label=decision_label)
         try:
             raw = self._resource.execute(self._key, action["action"], action["target"], action["parameters"],
                                          action["agent_id"])

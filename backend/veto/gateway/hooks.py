@@ -138,6 +138,7 @@ def flat_response(hook: str, resp: dict) -> dict:
     """What a no-code tool can filter on without parsing nested JSON."""
     status = resp.get("status")
     return {"hook": hook, "request_id": resp["request_id"], "decision": resp["decision"], "status": status,
-            "reason": resp.get("reason"), "executed": status == "executed",
+            "reason": resp.get("reason"), "executed": status in ("executed", "executed_unverified"),
+            "verified": status == "executed",
             "pending_approval": status == "pending_approval", "blocked": resp["decision"] == "block",
             "action_hash": resp["action_hash"], "effective_provenance": resp.get("effective_provenance", [])}

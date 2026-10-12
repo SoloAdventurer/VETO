@@ -25,6 +25,7 @@ from veto.adapters.mock_security_ops import AccessDenied, MockSecurityOps
 from veto.anomaly.detector import AnomalyDetector
 from veto.audit import open_audit
 from veto.canonical import action_hash, canonical_action, canonical_json, sha256_hex
+from veto.execution.connectors import Router
 from veto.execution.gateway import DecisionSigner, ExecutionGateway
 from veto.paths import DEFAULT_POLICY, SCHEMAS_DIR
 from veto.policy.engine import Facts, PolicyEngine
@@ -60,7 +61,8 @@ def _iso_now() -> str:
 class GatewayService:
     def __init__(self, policy_path: Path | str | None = None, db_path: str = ":memory:",
                  clock: Callable[[], float] = time.time, mode: str = "enforce", tenant: str = "default",
-                 policy_text: str | None = None, platform_check: Callable[[], bool] | None = None) -> None:
+                 policy_text: str | None = None, platform_check: Callable[[], bool] | None = None,
+                 connectors: Router | None = None) -> None:
         if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
         self.mode = mode
@@ -82,7 +84,8 @@ class GatewayService:
         access_key = secrets.token_hex(16)
         self.resource = MockSecurityOps(access_key)
         self.signer = DecisionSigner(secrets.token_bytes(32))
-        self.execution = ExecutionGateway(self.resource, access_key, self.signer, lambda: self.containment)
+        self.execution = ExecutionGateway(self.resource, access_key, self.signer, lambda: self.containment,
+                                          connectors)
         self.view = self.resource.trusted
         # request_id -> (agent_id, held_at) for requests awaiting a human: drives the T7 cap and approval expiry
         self._pending: dict[str, tuple[str, float]] = {}
@@ -468,8 +471,12 @@ class GatewayService:
         res = self.execution.execute(request_id=rec["request_id"], action=action, ahash=rec["action_hash"],
                                      decision_label=label, tag=tag)
         verification = None
+        if res["status"] == "executed" and res.get("external"):
+            verification = {"status": "skipped", "detail": "effect happened in an external system; VETO cannot "
+                            "inspect it, rely on the connector's response"}
         if res["status"] == "executed":
-            verification = verify_effect(action, res["raw"], self.view)
+            if verification is None:
+                verification = verify_effect(action, res["raw"], self.view)
             self._counted.add(rec["request_id"])
             self._history.append({"agent_id": action["agent_id"], "action": action["action"],
                                   "params": action["parameters"], "ts": self.clock()})
