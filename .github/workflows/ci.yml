@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
-      - run: pip install pytest jsonschema pyyaml ruff fastapi uvicorn httpx "psycopg[binary]"
+      - run: pip install pytest jsonschema pyyaml ruff fastapi uvicorn httpx "psycopg[binary]" cryptography
       - run: python scripts/check_invariants.py
       - run: ruff check backend scripts
       - run: pytest backend/tests -q
