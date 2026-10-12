@@ -61,6 +61,12 @@ An admin defines a *hook* that maps a payload to one action; the automation call
 ## Acting on your own systems
 `PUT /v1/admin/connectors/{name}` routes chosen actions to your endpoint as a signed HTTPS webhook. VETO decides and audits first; only the Execution Gateway holds the secret and makes the call, and it refuses unless the decision token and the action hash check out. Targets are limited to public addresses (no internal network or cloud metadata), secrets are sealed per tenant and never shown again. See `docs/connectors.md` and DECISIONS D-030.
 
+## Timestamped evidence
+Each tenant's audit chain is periodically sent to an independent time-stamp authority (RFC 3161) and the signed receipt is kept. A database insider who rewrites history and recomputes the hash chain is caught because the rewrite cannot match what the authority signed. See `docs/timestamping.md` and DECISIONS D-031.
+
+## Try it
+`python scripts/tour.py` runs a narrated 20-second walkthrough of everything. `docs/getting-started.md` explains how to install, test, and open the dashboard and API, step by step.
+
 ## PostgreSQL
 
 `VETO_DB=postgresql://...` stores the audit log in PostgreSQL instead of SQLite (shared by several gateway processes, append-only enforced by the database). See docs/postgres.md for setup, privileges and limits.

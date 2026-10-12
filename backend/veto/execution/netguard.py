@@ -21,6 +21,7 @@ from collections.abc import Callable
 from urllib.parse import urlsplit
 
 ALLOWED_PORTS = (443, 8443)
+ALLOWED_HTTP_PORTS = (80, 8080)
 MAX_URL_CHARS = 2048
 MAX_RESPONSE_BYTES = 65_536
 
@@ -39,25 +40,26 @@ class TransportError(Exception):
         self.sent = sent
 
 
-def parse_url(url: str) -> tuple[str, int, str]:
+def parse_url(url: str, allow_http: bool = False) -> tuple[str, int, str]:
     if not isinstance(url, str) or not url or len(url) > MAX_URL_CHARS:
         raise UnsafeTarget(f"url must be a string of 1-{MAX_URL_CHARS} characters")
     if any(ord(c) < 33 or ord(c) > 126 for c in url):
         raise UnsafeTarget("url contains spaces, control or non-ASCII characters")
     parts = urlsplit(url)
-    if parts.scheme != "https":
-        raise UnsafeTarget("url must use https")
+    if parts.scheme != "https" and not (allow_http and parts.scheme == "http"):
+        raise UnsafeTarget("url must use https" + (" (or http)" if allow_http else ""))
     if parts.username is not None or parts.password is not None or "@" in parts.netloc:
         raise UnsafeTarget("url must not contain credentials")
     host = parts.hostname
     try:
-        port = parts.port or 443
+        port = parts.port or (80 if parts.scheme == "http" else 443)
     except ValueError as exc:
         raise UnsafeTarget("url has an invalid port") from exc
     if not host:
         raise UnsafeTarget("url has no host")
-    if port not in ALLOWED_PORTS:
-        raise UnsafeTarget(f"port must be one of {ALLOWED_PORTS}")
+    ports = ALLOWED_HTTP_PORTS if parts.scheme == "http" else ALLOWED_PORTS
+    if port not in ports:
+        raise UnsafeTarget(f"port must be one of {ports}")
     path = parts.path or "/"
     if parts.query:
         path += "?" + parts.query
@@ -109,15 +111,30 @@ class _Pinned(http.client.HTTPSConnection):
         self.sock = self._context.wrap_socket(sock, server_hostname=self.host)    # type: ignore[attr-defined]
 
 
+class _PinnedHttp(http.client.HTTPConnection):
+    """Plain HTTP to a vetted address. Only for operator-chosen endpoints whose replies are signed (RFC 3161)."""
+
+    def __init__(self, host: str, port: int, ip: str, timeout: float) -> None:
+        super().__init__(host, port, timeout=timeout)
+        self._ip = ip
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection((self._ip, self.port), self.timeout)
+
+
 def post(url: str, body: bytes, headers: dict[str, str], timeout: float, *, resolver: Resolver = socket.getaddrinfo,
-         context: ssl.SSLContext | None = None, allow_private: bool = False) -> tuple[int, bytes]:
-    """POST `body`. `context` and `allow_private` exist for tests against a local server; production never sets them."""
-    host, port, path = parse_url(url)
+         context: ssl.SSLContext | None = None, allow_private: bool = False,
+         allow_http: bool = False) -> tuple[int, bytes]:
+    """POST `body`. `context` and `allow_private` exist for tests against a local server; production never sets them.
+    `allow_http` is for the timestamp authority only (its replies carry their own signature)."""
+    host, port, path = parse_url(url, allow_http)
+    plain = url.startswith("http://")
     ips = resolve_public(host, port, resolver, allow_private)
     ctx = context or ssl.create_default_context()
     last: Exception | None = None
     for ip in ips:
-        conn = _Pinned(host, port, ip, timeout, ctx)
+        conn: http.client.HTTPConnection = (_PinnedHttp(host, port, ip, timeout) if plain
+                                            else _Pinned(host, port, ip, timeout, ctx))
         try:
             try:
                 conn.connect()

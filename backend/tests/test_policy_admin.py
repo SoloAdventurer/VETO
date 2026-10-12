@@ -236,3 +236,10 @@ def test_diff_reports_added_removed_changed_and_whether_it_loosens():
     flipped = copy.deepcopy(old)
     next(r for r in flipped["rules"] if r["effect"] == "require_approval")["effect"] = "allow"
     assert diff_policies(old, flipped)["loosens"]
+
+
+@pytest.mark.parametrize("target", BACKENDS, indirect=True)
+def test_admins_can_read_the_effective_policy_before_any_edit_and_it_round_trips(world):
+    got = world.c.get("/v1/policy", headers=world.h("alpha", "admin")).json()
+    assert got["text"] == DEFAULT_POLICY.read_text() and got["history"] == []
+    assert propose(world, "alpha", got["text"].replace("version: \"0.1\"", "version: \"0.1.1\"")).status_code == 200

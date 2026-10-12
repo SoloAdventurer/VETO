@@ -69,6 +69,7 @@ class GatewayService:
         self.tenant = tenant
         self.clock = clock
         self.policy = load_policy_text(policy_text) if policy_text else load_policy(policy_path or DEFAULT_POLICY)
+        self.policy_text = policy_text or Path(policy_path or DEFAULT_POLICY).read_text()     # shown to admins
         self.engine = PolicyEngine(self.policy.raw)
         self.audit = open_audit(db_path, tenant)
         self._platform_check = platform_check or (lambda: False)
@@ -201,6 +202,7 @@ class GatewayService:
     def _install_policy(self, text: str) -> None:
         pol = load_policy_text(text)
         self.policy = pol
+        self.policy_text = text
         self._policy_sha = sha256_hex(text)
         self.engine = PolicyEngine(pol.raw)
         self.anomaly.working_hours = pol.raw.get("anomaly", {}).get("working_hours")

@@ -21,8 +21,14 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer
 from fastapi.staticfiles import StaticFiles
 
+from veto.audit.anchor import AnchorConfig, Anchorer
+from veto.audit.anchor import from_env as anchor_config_from_env
+from veto.audit.anchor import receipt as anchor_receipt
+from veto.audit.chain import PLATFORM_TENANT
+from veto.audit.rfc3161 import TimestampError
 from veto.auth.store import HUMAN_ROLES, AuthError, Principal, PrincipalStore
 from veto.canonical import sha256_hex
 from veto.execution import connectors
@@ -52,12 +58,14 @@ def create_app(service: GatewayService | None = None, demo: bool | None = None,
                clock: Callable[[], float] = time.time, agent_rate: tuple[float, int] | None = None,
                human_rate: tuple[float, int] | None = None, auth_max_failures: int | None = None,
                auth_lockout_s: float | None = None, platform_key: str | None = None,
-               connector_net: connectors.Net | None = None) -> FastAPI:
+               connector_net: connectors.Net | None = None, anchoring: AnchorConfig | None = None) -> FastAPI:
     demo_enabled = demo if demo is not None else os.environ.get("VETO_DEMO", "1") == "1"
     _db = os.environ.get("VETO_DB", ":memory:")
     # With the audit log on PostgreSQL the keys default to the same database, so every gateway process shares them.
     _auth_default = _db if _db.startswith(("postgresql://", "postgres://")) else ":memory:"
     principals = store or PrincipalStore(os.environ.get("VETO_AUTH_DB", _auth_default))
+    anchor_cfg = anchoring or anchor_config_from_env(dict(os.environ))
+    anchorer = Anchorer(principals, _db, anchor_cfg) if anchor_cfg else None
     net = connector_net or connectors.Net()
     runtimes = Runtimes(principals, _db, os.environ.get("VETO_MODE", "enforce"), clock, net)
     if service is not None:
@@ -112,12 +120,17 @@ def create_app(service: GatewayService | None = None, demo: bool | None = None,
             raise HTTPException(429, "rate limit exceeded", headers={"Retry-After": str(max(1, math.ceil(retry)))})
         request.state.principal = principal
 
-    app = FastAPI(title="VETO Gateway", version="0.1.0", dependencies=[Depends(authenticate)],
+    bearer_scheme = HTTPBearer(auto_error=False, description="VETO API key (veto_...)")   # /docs Authorize button
+    app = FastAPI(title="VETO Gateway", version="0.1.0",
+                  dependencies=[Depends(authenticate), Depends(bearer_scheme)],
                   description="Autonomy does not imply authority. Agents propose; VETO decides.")
     app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
                        allow_methods=["*"], allow_headers=["*"])
     app.state.principals = principals
     app.state.runtimes = runtimes
+    app.state.anchorer = anchorer
+    if anchorer and anchor_cfg and anchor_cfg.interval_s > 0 and anchoring is None:
+        anchorer.start()                       # background timestamping; tests drive run_once() themselves
     app.state.db_target = _db
 
     def guard(fn):
@@ -382,6 +395,50 @@ def create_app(service: GatewayService | None = None, demo: bool | None = None,
                               f"Connector {name} pinged by {p.id}: {res['result_summary']}")
         return {"ok": res["status"] == "executed", "detail": res["result_summary"]}
 
+    # ---- external timestamps of the audit chain (D-031)
+    def _anchorer() -> Anchorer:
+        if anchorer is None:
+            raise HTTPException(503, "timestamping is not configured (set VETO_TSA_URL)")
+        return anchorer
+
+    @app.get("/v1/anchors")
+    def anchors_list(request: Request):
+        p = who(request, *READERS)
+        t = p.tenant
+        return {"enabled": anchorer is not None, "authority": anchorer.tsa_host if anchorer else None,
+                "interval_s": anchor_cfg.interval_s if anchor_cfg else None,
+                "signature_checked": bool(anchor_cfg and anchor_cfg.ca_file),
+                "last_error": anchorer.last_error.get(t) if anchorer else None,
+                "anchors": principals.list_anchors(t)}
+
+    @app.post("/v1/anchors")
+    def anchors_now(request: Request):
+        p = who(request, "admin")
+        a = _anchorer()
+        try:
+            got = a.anchor(p.tenant)
+        except TimestampError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        return got or {"detail": "nothing new since the last anchor"}
+
+    @app.get("/v1/anchors/verify")
+    def anchors_verify(request: Request):
+        p = who(request, *READERS)
+        return _anchorer().verify(p.tenant)
+
+    @app.get("/v1/anchors/{seq}/receipt")
+    def anchors_receipt(request: Request, seq: int):
+        p = who(request, *READERS)
+        row = principals.get_anchor(p.tenant, seq)
+        if row is None:
+            raise HTTPException(404, "no anchor at that position")
+        return anchor_receipt(p.tenant, row)
+
+    @app.get("/v1/platform/anchors")
+    def platform_anchors(request: Request):
+        who(request, "platform_admin")
+        return {"enabled": anchorer is not None, "anchors": principals.list_anchors(PLATFORM_TENANT)}
+
     # ---- policy editing (D-028)
     def _version_or_404(tenant: str, version: int) -> dict:
         row = principals.get_policy_version(tenant, version, with_text=True)
@@ -394,7 +451,7 @@ def create_app(service: GatewayService | None = None, demo: bool | None = None,
         who(request, *READERS)
         s = svc(request)
         t = request.state.principal.tenant
-        text = principals.active_policy_text(t)
+        text = s.policy_text
         return {"policy_id": s.policy.policy_id, "version": s.policy.version, "fault": s._policy_fault,
                 "text": text, "history": principals.list_policy_versions(t)}
 

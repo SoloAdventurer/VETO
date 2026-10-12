@@ -116,6 +116,13 @@ class PostgresAuditLog:
             self._db.rollback()
         return n
 
+    def head(self) -> tuple[int, str] | None:
+        with self._lock:
+            row = self._conn().execute("SELECT COALESCE(tseq, seq), record FROM audit WHERE tenant = %s "
+                                       "ORDER BY seq DESC LIMIT 1", (self.tenant,)).fetchone()
+            self._db.rollback()
+        return (row[0], json.loads(row[1])["record_hash"]) if row else None
+
     @contextlib.contextmanager
     def exclusive(self):
         """Hold this tenant's database-wide lock for a whole decision (catch up, decide, append), so two gateway

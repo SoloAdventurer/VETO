@@ -61,6 +61,11 @@ CREATE TABLE IF NOT EXISTS connectors (
   tenant TEXT NOT NULL, name TEXT NOT NULL, meta TEXT NOT NULL, sealed TEXT NOT NULL, created_by TEXT NOT NULL,
   created_at DOUBLE PRECISION NOT NULL, PRIMARY KEY (tenant, name)
 );
+CREATE TABLE IF NOT EXISTS anchors (
+  tenant TEXT NOT NULL, seq INTEGER NOT NULL, head_hash TEXT NOT NULL, digest TEXT NOT NULL, tsr TEXT NOT NULL,
+  gen_time TEXT NOT NULL, tsa TEXT NOT NULL, signature_checked INTEGER NOT NULL, created_at DOUBLE PRECISION NOT NULL,
+  PRIMARY KEY (tenant, seq)
+);
 CREATE TABLE IF NOT EXISTS hook_calls (
   tenant TEXT NOT NULL, hook TEXT NOT NULL, idem_key TEXT NOT NULL, request_id TEXT,
   created_at DOUBLE PRECISION NOT NULL, PRIMARY KEY (tenant, hook, idem_key)
@@ -224,6 +229,48 @@ class PrincipalStore:
                 except self._db.integrity_error:
                     continue
         raise AuthError("could not allocate a policy version; retry", 409)
+
+    # ---------------------------------------------------------------- anchors (external timestamps of chain heads)
+    def add_anchor(self, tenant: str, seq: int, head_hash: str, digest: str, tsr_b64: str, gen_time: str, tsa: str,
+                   signature_checked: bool) -> bool:
+        with self._lock:
+            try:
+                self._db.execute(
+                    "INSERT INTO anchors (tenant, seq, head_hash, digest, tsr, gen_time, tsa, signature_checked, "
+                    "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (tenant, seq, head_hash, digest, tsr_b64, gen_time, tsa, int(signature_checked), self._clock()))
+                self._db.commit()
+                return True
+            except self._db.integrity_error:        # another process anchored the same head first
+                return False
+
+    _ANCHOR_COLS = "seq, head_hash, digest, gen_time, tsa, signature_checked, created_at"
+
+    @staticmethod
+    def _anchor_row(r, with_receipt: bool = False) -> dict:
+        out = {"seq": r[0], "head_hash": r[1], "digest": r[2], "gen_time": r[3], "tsa": r[4],
+               "signature_checked": bool(r[5]), "created_at": r[6]}
+        if with_receipt:
+            out["tsr_base64"] = r[7]
+        return out
+
+    def list_anchors(self, tenant: str) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute(f"SELECT {self._ANCHOR_COLS} FROM anchors WHERE tenant = ? "  # noqa: S608
+                                    "ORDER BY seq", (tenant,)).fetchall()
+        return [self._anchor_row(r) for r in rows]
+
+    def get_anchor(self, tenant: str, seq: int) -> dict | None:
+        with self._lock:
+            row = self._db.execute(f"SELECT {self._ANCHOR_COLS}, tsr FROM anchors "  # noqa: S608
+                                   "WHERE tenant = ? AND seq = ?", (tenant, seq)).fetchone()
+        return self._anchor_row(row, True) if row else None
+
+    def last_anchor(self, tenant: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute(f"SELECT {self._ANCHOR_COLS} FROM anchors WHERE tenant = ? "  # noqa: S608
+                                   "ORDER BY seq DESC LIMIT 1", (tenant,)).fetchone()
+        return self._anchor_row(row) if row else None
 
     # ---------------------------------------------------------------- connectors (sealed; this class never opens them)
     def put_connector(self, tenant: str, name: str, meta: dict, sealed: str, by: str) -> None:

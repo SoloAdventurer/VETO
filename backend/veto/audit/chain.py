@@ -73,9 +73,9 @@ def seal(record: dict, prev_hash: str, tenant: str = DEFAULT_TENANT) -> dict:
     return rec
 
 
-def verify_chain(records: list[dict], tenant: str = DEFAULT_TENANT) -> dict:
-    """Recompute the whole chain over records (each carrying its `seq`)."""
-    prev = GENESIS
+def verify_chain(records: list[dict], tenant: str = DEFAULT_TENANT, prev: str = GENESIS) -> dict:
+    """Recompute the chain over records (each carrying its `seq`). `prev` is the hash the first record must follow:
+    the genesis value for a whole log, or an anchored head when checking only what was added since."""
     count = 0
     for rec in records:
         count += 1
@@ -140,6 +140,13 @@ class AuditLog:
     def count(self) -> int:
         with self._lock:
             return self._db.execute("SELECT COUNT(*) FROM audit WHERE tenant = ?", (self.tenant,)).fetchone()[0]
+
+    def head(self) -> tuple[int, str] | None:
+        """(sequence number, record hash) of this tenant's newest record, or None when the log is empty."""
+        with self._lock:
+            row = self._db.execute("SELECT COALESCE(tseq, seq), record FROM audit WHERE tenant = ? "
+                                   "ORDER BY seq DESC LIMIT 1", (self.tenant,)).fetchone()
+        return (row[0], json.loads(row[1])["record_hash"]) if row else None
 
     def exclusive(self):
         """Cross-process critical section around one decision. SQLite is single-process, so nothing to do."""

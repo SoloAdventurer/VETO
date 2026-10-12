@@ -9,7 +9,7 @@ RUN npm run build
 # --- gateway + dashboard ---
 FROM python:3.12-slim
 WORKDIR /app
-RUN pip install --no-cache-dir fastapi "uvicorn[standard]" jsonschema pyyaml
+RUN pip install --no-cache-dir fastapi "uvicorn[standard]" jsonschema pyyaml cryptography "psycopg[binary]"
 COPY backend/ ./backend/
 COPY schemas/ ./schemas/
 COPY policies/ ./policies/
